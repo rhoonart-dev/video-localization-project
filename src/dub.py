@@ -182,6 +182,55 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
     return {"draft": str(draft), "segments": len(segments), "backend": backend}
 
 
+# ── 영상→더빙 (ASR → 번역 → 합성 → 믹스) ─────────────────────────────────
+def transcribe(media: str, config: dict[str, Any], language: str = "ko") -> list[dict[str, Any]]:
+    """faster-whisper 로 음성 받아쓰기 → [{start,end,text}] (대사 없는 영상이면 빈 리스트)."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as e:
+        raise ImportError("faster-whisper 필요: pip install faster-whisper") from e
+    size = config.get("dub", {}).get("asr_model", "base")
+    model = WhisperModel(size, device="cpu", compute_type="int8")
+    segs, _ = model.transcribe(str(media), language=language, vad_filter=True)
+    return [{"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
+            for s in segs if s.text.strip()]
+
+
+def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any],
+                   speaker_wav: Optional[str] = None, source_lang: str = "ko",
+                   mux: bool = True) -> dict[str, Any]:
+    """대사 있는 영상 풀 더빙: 받아쓰기(ASR) → 트랜스크리에이션 → 클론 합성 → 영상에 믹스.
+
+    [필수 게이트] Level C 한정. 결과는 초안 — retention·hero 는 사람/성우 검토.
+    """
+    require_level_c(level)
+    from engine import common as _common
+    from engine import render as render_mod
+    from engine.translate import transcreate
+
+    segs = transcribe(video, config, language=source_lang)
+    if not segs:
+        raise ValueError("받아쓰기된 대사 없음 — 대사 없는 영상(ASMR 등)일 수 있음. 대사 있는 영상 필요.")
+    log.info("ASR 대사 %d개 받아쓰기 완료 → 트랜스크리에이션", len(segs))
+
+    entries = transcreate([s["text"] for s in segs], config)   # 한국어→일본어(LLM, persona)
+    jmap = {e.source: e.target for e in entries}
+    events = [{"start": s["start"], "end": s["end"], "text": jmap.get(s["text"], "")} for s in segs]
+
+    base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
+    ja_srt = base / "ja_dub.srt"
+    ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),
+                      encoding="utf-8")
+    res = dub(video_id, str(ja_srt), level, config, speaker_wav=speaker_wav)
+
+    if mux:
+        bg = float(config.get("dub", {}).get("bg_volume", 0.3))
+        out = _common.mux_dub(video, res["draft"], base / "final_dubbed.mp4", bg_volume=bg)
+        res["dubbed_video"] = str(out)
+        log.info("더빙 영상(초안): %s", out)
+    return res
+
+
 def _assemble_timeline(seg_files: list[tuple[float, Path]], out: Path) -> None:
     """각 세그먼트를 시작 시각에 배치해 한 트랙으로 mix(ffmpeg adelay+amix)."""
     if not seg_files:
@@ -208,11 +257,14 @@ def _assemble_timeline(seg_files: list[tuple[float, Path]], out: Path) -> None:
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Level C 더빙 초안(드래프트 오디오까지)")
     p.add_argument("--video-id", required=True)
-    p.add_argument("--subtitle", required=True, help="ja.srt 또는 ja.ass")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--subtitle", help="ja.srt/ja.ass (자막 기반 더빙)")
+    src.add_argument("--video", help="대사 있는 영상 (ASR→번역→더빙 풀 플로우)")
     p.add_argument("--level", default="C", help="C 가 아니면 거부")
     p.add_argument("--backend", default=None, help="xtts(오픈소스 클로닝) | elevenlabs")
     p.add_argument("--speaker", default=None, help="xtts: 클로닝용 음성 샘플(wav/mp3) 경로")
     p.add_argument("--voice", default=None, help="elevenlabs: voice_id")
+    p.add_argument("--source-lang", default="ko", help="--video ASR 원본 언어")
     p.add_argument("--config", default=None)
     return p.parse_args(argv)
 
@@ -222,8 +274,12 @@ def main(argv: Optional[list[str]] = None) -> None:
     config = load_config(args.config)
     if args.backend:
         config.setdefault("dub", {})["tts_backend"] = args.backend
-    dub(args.video_id, args.subtitle, args.level, config,
-        voice_id=args.voice, speaker_wav=args.speaker)
+    if args.video:
+        dub_from_video(args.video_id, args.video, args.level, config,
+                       speaker_wav=args.speaker, source_lang=args.source_lang)
+    else:
+        dub(args.video_id, args.subtitle, args.level, config,
+            voice_id=args.voice, speaker_wav=args.speaker)
 
 
 if __name__ == "__main__":

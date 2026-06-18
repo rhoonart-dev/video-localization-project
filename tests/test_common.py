@@ -81,3 +81,14 @@ def test_mux_audio_faststart_both_branches():
     finally:
         common._run = orig
     assert all("+faststart" in c for c in calls)
+
+
+def test_mux_dub_faststart_and_amix():
+    calls, orig = _capture_run()
+    try:
+        common.mux_dub("/tmp/v.mp4", "/tmp/dub.wav", "/tmp/out.mp4", bg_volume=0.3)
+    finally:
+        common._run = orig
+    cmd = calls[0]
+    assert "+faststart" in cmd
+    assert any("amix" in part for part in cmd)   # 원본+더빙 믹스

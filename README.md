@@ -70,8 +70,14 @@ python -m src.process_video --video data/source/vid001.mp4 --video-id vid001 \
 python -m src.thumbnail --video-id vid001 --base data/source/vid001_thumb.png \
     --title "불닭 라면 먹방 ASMR"
 
-# 5) (Level C 한정, 게이트 통과 후) 더빙 초안
-python -m src.dub --video-id vid001 --subtitle outputs/vid001/ja.srt --level C --voice <VOICE_ID>
+# 5) (Level C 한정, 게이트 통과 후) 더빙 — 오픈소스 보이스 클로닝(XTTS, 기본)
+#   자막 기반:
+python -m src.dub --video-id vid001 --subtitle outputs/vid001/ja.srt --level C \
+    --backend xtts --speaker voices/loopy_sample.wav
+#   대사 영상 풀 플로우(ASR 받아쓰기 → 트랜스크리에이션 → 클론 합성 → 원음 믹스):
+python -m src.dub --video-id vid001 --video data/source/vid001_dialogue.mp4 --level C \
+    --backend xtts --speaker voices/loopy_sample.wav
+#   ⚠ XTTS-v2 가중치 = 비상업 라이선스. 상업 게시엔 --backend elevenlabs --voice <ID> 등 상업가능 옵션.
 ```
 
 → `review/checklist.md` 의 게이트①②③ 검수 후 **사람이 업로드**. 6) KPI 를 다시 `src.select` 로.

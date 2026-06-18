@@ -226,3 +226,20 @@ def mux_audio(video: str | os.PathLike, audio: Optional[str | os.PathLike],
           "-c:v", "copy", "-c:a", "aac", "-shortest", "-map", "0:v:0", "-map", "1:a:0",
           "-movflags", "+faststart", str(out)])
     return out
+
+
+def mux_dub(video: str | os.PathLike, dub_audio: str | os.PathLike,
+            out: str | os.PathLike, bg_volume: float = 0.3,
+            voice_volume: float = 1.8) -> Path:
+    """원본 오디오(낮춤=더킹) + 더빙 보이스 믹스 → 영상에 입힘(faststart).
+
+    bg_volume=0 이면 원본 제거(완전 대체). ASMR 등은 bg_volume 을 높여 원음 보존.
+    """
+    out = Path(out)
+    ensure_dir(out.parent)
+    filt = (f"[0:a]volume={bg_volume}[bg];[1:a]volume={voice_volume}[voc];"
+            f"[bg][voc]amix=inputs=2:duration=first:normalize=0[a]")
+    _run(["ffmpeg", "-y", "-i", str(video), "-i", str(dub_audio),
+          "-filter_complex", filt, "-map", "0:v", "-map", "[a]",
+          "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", str(out)])
+    return out

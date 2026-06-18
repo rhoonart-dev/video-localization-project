@@ -1,6 +1,15 @@
 """engine/detect.py — 순수 헬퍼(OCR 백엔드 미설치에서도 동작)."""
-from engine.detect import (clamp_bbox, estimate_style, make_ocr, position_bucket,
-                           quad_to_bbox)
+from engine.detect import (clamp_bbox, estimate_style, korean_ocr_warning, make_ocr,
+                           position_bucket, quad_to_bbox)
+
+
+def test_korean_ocr_warning_for_rapidocr():
+    assert "paddleocr" in korean_ocr_warning("rapidocr", ["korean", "en"])
+
+
+def test_korean_ocr_warning_none_for_paddle_or_no_korean():
+    assert korean_ocr_warning("paddleocr", ["korean"]) == ""
+    assert korean_ocr_warning("rapidocr", ["en"]) == ""
 
 
 def test_quad_to_bbox():

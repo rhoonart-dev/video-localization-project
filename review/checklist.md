@@ -23,9 +23,11 @@
 - [ ] (필요 시) ROI 재지정/백엔드 변경 후 재처리
 
 ### 게이트③ 더빙 (Level C 한정)
-- [ ] `dub_ja_draft.wav` 캐릭터 보이스 디렉션 적합한가
-- [ ] 자막 타이밍과 음성 싱크
+- [ ] `dub_ja_draft.wav` / `final_dubbed.mp4` 클론 보이스가 캐릭터에 맞는가(또는 보이스 디렉션 일관)
+- [ ] 자막/대사 타이밍과 음성 싱크
+- [ ] 원음(ASMR 등)과 더빙 믹스 밸런스(`dub.bg_volume`) 적절한가
 - [ ] retention 리스크 — hero 영상은 성우 검토
+- [ ] (상업) XTTS-v2 가중치는 **비상업 라이선스** — 게시본은 상업가능 보이스(ElevenLabs 등)로 교체했는가
 
 ### 공통 산출물
 - [ ] 자막 싱크: `ja.ass` / `ja.srt` 화면과 일치
@@ -47,7 +49,7 @@
 | → 게이트① 번역 검수 | (사람) | 승인/수정 | 네이티브 검수자 |
 | → 게이트② 인페인팅 검수 | (사람) | 승인/재처리 | 엔지니어+검수자 |
 | 4. 썸네일 | `python -m src.thumbnail --video-id ID --base ...` | `thumb_ja_v*.png` | 디자이너 |
-| → 게이트③ 더빙(C) | `python -m src.dub --video-id ID --subtitle ja.srt` | `dub_ja_draft.wav` | 성우/검수자 |
+| → 게이트③ 더빙(C) | `python -m src.dub --video-id ID --video dialogue.mp4 --backend xtts --speaker loopy.wav` | `dub_ja_draft.wav`, `final_dubbed.mp4` | 성우/검수자 |
 | 5. 업로드 | **사람이 YouTube Studio 에서 최종 클릭** | 게시 | 운영 |
 | 6. 측정·튜닝 | 분석 CSV → `src.select` 재투입 | 다음 배치 우선순위 | 운영 |
 

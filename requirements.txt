@@ -31,5 +31,11 @@ anthropic>=0.40
 # === 선택: DeepL 초벌 번역 (engine/translate.py --deepl) ===
 #   TRANSLATE_API_KEY 로 DeepL REST 호출 (requests 사용, 추가 패키지 불필요)
 
-# === 선택: 더빙 TTS (src/dub.py, Level C 한정) ===
-# elevenlabs>=1.0
+# === 더빙 (src/dub.py, Level C 한정) — 자막 또는 대사 영상 기반 일본어 더빙 ===
+#   기본 백엔드 xtts = 오픈소스 보이스 클로닝(한국어 샘플→일본어 크로스링구얼).
+# faster-whisper>=1.0          # 영상→대사 받아쓰기(ASR, --video 플로우)
+# coqui-tts>=0.27              # XTTS-v2 보이스 클로닝(ja/ko 지원). ⚠ 가중치=Coqui Public License(비상업)
+# torchaudio                   # XTTS 오디오 IO
+# torchcodec                   # torch 2.9+ 오디오 디코딩
+# cutlet  fugashi  unidic-lite # XTTS 일본어 토크나이저(MeCab)
+# elevenlabs>=1.0              # (대안) 상업 라이선스 클로닝 — ELEVENLABS_API_KEY 필요

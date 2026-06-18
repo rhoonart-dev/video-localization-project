@@ -45,6 +45,15 @@ def clamp_bbox(bbox: BBox, width: int, height: int) -> BBox:
             max(0, min(x2, width)), max(0, min(y2, height)))
 
 
+def korean_ocr_warning(backend: str, languages: Optional[list[str]]) -> str:
+    """RapidOCR 기본 모델은 한국어 인식 미지원 → 경고 문구(해당 없으면 빈 문자열)."""
+    if backend == "rapidocr" and "korean" in (languages or []):
+        return ("RapidOCR 기본 모델은 한국어 인식을 지원하지 않아 텍스트가 깨질 수 있습니다"
+                "(영역 탐지는 동작). 한국어 화면 텍스트는 `--backend paddleocr` 또는 "
+                "ROI(`--subtitle-area`)+사람 검수 게이트를 권장합니다.")
+    return ""
+
+
 # ── OCR 백엔드 팩토리 ────────────────────────────────────────────────────
 class OCRBackend:
     """recognize(frame_bgr) -> list[OcrResult] 계약."""
@@ -181,6 +190,9 @@ def detect(video: str, video_id: str, config: dict[str, Any],
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     ocr = make_ocr(backend_name, languages)
+    warn = korean_ocr_warning(ocr.name, languages)
+    if warn:
+        log.warning(warn)
     log.info("탐지 시작 video_id=%s backend=%s roi=%s sample_every=%d",
              video_id, ocr.name, roi, sample_every)
 
