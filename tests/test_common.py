@@ -91,8 +91,9 @@ def test_mux_dub_faststart_and_amix():
         common._run = orig
     cmd = calls[0]
     assert "+faststart" in cmd
-    assert any("amix" in part for part in cmd)   # 원본+더빙 믹스
-    assert cmd.count("-i") == 2                   # bg_audio 없음 → 입력 2개(영상+더빙)
+    assert any("amix" in part for part in cmd)       # 원본+더빙 믹스
+    assert any("loudnorm" in part for part in cmd)   # 라우드니스 정규화
+    assert cmd.count("-i") == 2                       # bg_audio 없음 → 입력 2개(영상+더빙)
 
 
 def test_mux_dub_with_bg_audio_three_inputs():

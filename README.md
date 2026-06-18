@@ -77,6 +77,8 @@ python -m src.dub --video-id vid001 --subtitle outputs/vid001/ja.srt --level C \
 #   대사 영상 풀 플로우(ASR 받아쓰기 → 트랜스크리에이션 → 클론 합성 → 원음 믹스):
 python -m src.dub --video-id vid001 --video data/source/vid001_dialogue.mp4 --level C \
     --backend xtts --speaker voices/loopy_sample.wav
+#   원본 목소리 제거(깨끗한 더빙): config dub.remove_original_vocals=true (Demucs 보컬 분리).
+#   합성 음성은 자막 슬롯 길이에 맞춰 time-stretch(싱크) + 라우드니스 정규화(-16 LUFS) 자동 적용.
 #   ⚠ XTTS-v2 가중치 = 비상업 라이선스. 상업 게시엔 --backend elevenlabs --voice <ID> 등 상업가능 옵션.
 ```
 
