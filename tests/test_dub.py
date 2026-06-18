@@ -2,8 +2,19 @@
 import pathlib
 import tempfile
 
-from src.dub import (_ass_time, _srt_time, build_alignment_report, dub_backend,
-                     parse_segments, require_level_c, segment_ext, synthesize_segment)
+from src.dub import (_ass_time, _srt_time, atempo_filters, build_alignment_report,
+                     dub_backend, parse_segments, require_level_c, segment_ext,
+                     synthesize_segment)
+
+
+def test_atempo_filters_single_when_in_range():
+    assert atempo_filters(1.0) == "atempo=1.0000"
+    assert atempo_filters(1.5) == "atempo=1.5000"
+
+
+def test_atempo_filters_chains_above_2x():
+    # 3.0배는 2.0 × 1.5 로 분해
+    assert atempo_filters(3.0) == "atempo=2.0,atempo=1.5000"
 
 
 def test_dub_backend_default_and_override():

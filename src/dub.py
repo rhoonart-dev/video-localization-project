@@ -75,6 +75,20 @@ def parse_segments(subtitle_path: str) -> list[dict[str, Any]]:
     return segs
 
 
+def atempo_filters(speed: float) -> str:
+    """ffmpeg atempo 는 0.5~2.0 만 지원 → 필요한 배속을 체인으로 분해한 필터 문자열."""
+    speed = max(0.25, min(4.0, speed))
+    parts: list[str] = []
+    while speed > 2.0:
+        parts.append("atempo=2.0")
+        speed /= 2.0
+    while speed < 0.5:
+        parts.append("atempo=0.5")
+        speed /= 0.5
+    parts.append(f"atempo={speed:.4f}")
+    return ",".join(parts)
+
+
 def build_alignment_report(video_id: str, segments: list[dict[str, Any]],
                            voice_id: str) -> dict[str, Any]:
     return {
@@ -167,11 +181,19 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
     ext = segment_ext(config)
     log.warning("Level C 더빙 초안 생성(backend=%s). hero/리텐션 리스크는 사람 검토 필수.", backend)
 
+    fit = config.get("dub", {}).get("fit_to_timing", True)
+    max_sp = float(config.get("dub", {}).get("max_speedup", 1.6))
     seg_files: list[tuple[float, Path]] = []
     for i, seg in enumerate(segments):
         data = synthesize_segment(seg["text"], config, voice_id=voice_id, speaker_wav=speaker_wav)
         fp = seg_dir / f"seg_{i:04d}{ext}"
-        fp.write_bytes(data)
+        slot = seg.get("end", 0) - seg.get("start", 0)
+        if fit and slot > 0:                          # 슬롯 길이에 맞게 time-stretch(싱크)
+            raw = seg_dir / f"seg_{i:04d}_raw{ext}"
+            raw.write_bytes(data)
+            _fit_audio(raw, fp, slot, max_speedup=max_sp)
+        else:
+            fp.write_bytes(data)
         seg_files.append((seg["start"], fp))
 
     draft = base / "dub_ja_draft.wav"
@@ -229,6 +251,23 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
         res["dubbed_video"] = str(out)
         log.info("더빙 영상(초안): %s", out)
     return res
+
+
+def _fit_audio(in_path: Path, out_path: Path, target_sec: float, max_speedup: float = 1.6) -> None:
+    """합성 음성을 슬롯 길이에 맞게 time-stretch(피치 유지). 과도한 변형은 클램프."""
+    import subprocess
+
+    dur = common.probe(in_path).get("duration", 0.0)
+    if dur <= 0 or target_sec <= 0:
+        out_path.write_bytes(in_path.read_bytes())
+        return
+    speed = dur / target_sec                       # >1 = 너무 길어 빠르게
+    speed = min(speed, max_speedup) if speed > 1 else max(speed, 0.7)
+    if abs(speed - 1.0) < 0.05:                    # 충분히 근접 → 그대로
+        out_path.write_bytes(in_path.read_bytes())
+        return
+    subprocess.run(["ffmpeg", "-y", "-i", str(in_path), "-filter:a", atempo_filters(speed),
+                    str(out_path)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _assemble_timeline(seg_files: list[tuple[float, Path]], out: Path) -> None:

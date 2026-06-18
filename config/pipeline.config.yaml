@@ -95,6 +95,8 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   speaker_wav: null                # 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로
   asr_model: base                  # faster-whisper 모델(영상→더빙 받아쓰기): base|small|medium
   bg_volume: 0.3                   # 더빙 믹스 시 원본 오디오 볼륨(ASMR 보존 시 ↑, 완전대체 0)
+  fit_to_timing: true              # 합성 음성을 자막 슬롯 길이에 맞게 time-stretch(싱크)
+  max_speedup: 1.6                 # time-stretch 과도한 배속 방지 클램프
   xtts_model: tts_models/multilingual/multi-dataset/xtts_v2
   #  ⚠ XTTS-v2 가중치 라이선스 = Coqui Public Model License(비상업). 상업 사용 전 확인.
   voice_id: null                   # elevenlabs 백엔드용 voice_id
