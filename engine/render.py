@@ -200,9 +200,12 @@ def render_replace(inpainted_dir: str, doc: DetectionDoc, tmap: dict[str, str],
                     continue
                 lines = wrap_text(jp, int(rcfg.get("line_max_chars", 16)))
                 font = _font(r.style)
-                x, y = r.bbox[0], r.bbox[1]
+                bbox_w = r.bbox[2] - r.bbox[0]
+                y = r.bbox[1]
                 for ln in lines:
-                    draw.text((x, y), ln, font=font, fill=r.style.color,
+                    lw = draw.textlength(ln, font=font)          # bbox 폭 기준 가로 중앙 정렬
+                    lx = r.bbox[0] + max(0, (bbox_w - lw) / 2)
+                    draw.text((lx, y), ln, font=font, fill=r.style.color,
                               stroke_width=stroke, stroke_fill=r.style.stroke_color)
                     y += int(r.style.font_size * 1.1)
         img.save(out / fp.name)

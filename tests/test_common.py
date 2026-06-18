@@ -45,3 +45,39 @@ def test_get_secret_fallback_and_optional():
         assert common.get_secret("DOES_NOT_EXIST_K") is None
     finally:
         os.environ.pop("FALLBACK_K", None)
+
+
+def _capture_run():
+    """common._run 를 스텁해 ffmpeg 명령을 캡처(실제 실행/ffmpeg/미디어 불필요)."""
+    calls = []
+    orig = common._run
+    common._run = lambda cmd, quiet=True: calls.append(cmd)
+    return calls, orig
+
+
+def test_frames_to_video_mp4_has_faststart():
+    calls, orig = _capture_run()
+    try:
+        common.frames_to_video("/tmp/x", "/tmp/out.mp4", 30, codec="libx264")
+    finally:
+        common._run = orig
+    assert "-movflags" in calls[0] and "+faststart" in calls[0]
+
+
+def test_frames_to_video_ffv1_no_faststart():
+    calls, orig = _capture_run()
+    try:
+        common.frames_to_video("/tmp/x", "/tmp/out.mkv", 30, codec="ffv1")
+    finally:
+        common._run = orig
+    assert "+faststart" not in calls[0]  # mkv 무손실 중간본엔 불필요
+
+
+def test_mux_audio_faststart_both_branches():
+    calls, orig = _capture_run()
+    try:
+        common.mux_audio("/tmp/v.mp4", None, "/tmp/o1.mp4")          # 오디오 없음(복사)
+        common.mux_audio("/tmp/v.mp4", "/tmp/a.wav", "/tmp/o2.mp4")  # 오디오 merge
+    finally:
+        common._run = orig
+    assert all("+faststart" in c for c in calls)

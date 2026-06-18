@@ -34,12 +34,20 @@ class InpaintBackend:
     def inpaint_image(self, image_bgr, mask):  # pragma: no cover - 추상
         raise NotImplementedError
 
-    def inpaint_sequence(self, frames_dir: Path, masks_dir: Path, out_dir: Path) -> Path:
-        """기본: 프레임별 inpaint_image 루프(이미지 기반 백엔드용)."""
+    def inpaint_sequence(self, frames_dir: Path, masks_dir: Path, out_dir: Path,
+                         margin: int = 24) -> Path:
+        """기본: 프레임별 inpaint_image 루프(이미지 기반 백엔드용).
+
+        마스크의 bounding box + 여백 영역만 인페인트하고 원위치에 합성한다.
+        전체 프레임 대비 모델 입력이 작아져 속도가 크게 빨라지고(특히 LaMa),
+        모델이 텍스트 영역에 집중해 품질도 좋아진다. 마스크 없는 프레임은 복사.
+        """
         import cv2
+        import numpy as np
 
         out = ensure_dir(out_dir)
         frames = sorted(Path(frames_dir).glob("*.png"))
+        done = 0
         for fp in frames:
             mp = Path(masks_dir) / fp.name
             img = cv2.imread(str(fp))
@@ -47,8 +55,14 @@ class InpaintBackend:
             if mask is None or not mask.any():
                 cv2.imwrite(str(out / fp.name), img)  # 마스크 없으면 그대로
                 continue
-            cv2.imwrite(str(out / fp.name), self.inpaint_image(img, mask))
-        log.info("[%s] %d 프레임 인페인팅 → %s", self.name, len(frames), out)
+            ys, xs = np.where(mask > 0)
+            x1, y1, x2, y2 = crop_bounds(int(xs.min()), int(ys.min()), int(xs.max()),
+                                         int(ys.max()), margin, img.shape[1], img.shape[0])
+            patch = self.inpaint_image(img[y1:y2, x1:x2].copy(), mask[y1:y2, x1:x2])
+            img[y1:y2, x1:x2] = patch[:y2 - y1, :x2 - x1]   # 백엔드 패딩 방어(크기 보정)
+            cv2.imwrite(str(out / fp.name), img)
+            done += 1
+        log.info("[%s] %d/%d 프레임 인페인팅(영역 크롭) → %s", self.name, done, len(frames), out)
         return out
 
 
@@ -86,7 +100,9 @@ class LamaBackend(InpaintBackend):
         rgb = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
         m = Image.fromarray((mask > 0).astype("uint8") * 255)
         result = self._lama(rgb, m)
-        return cv2.cvtColor(np.array(result), cv2.COLOR_RGB2BGR)
+        res = cv2.cvtColor(np.array(result), cv2.COLOR_RGB2BGR)
+        h, w = image_bgr.shape[:2]          # LaMa 는 8 배수로 패딩 → 입력 크기로 되돌림
+        return res[:h, :w]
 
 
 class STTNBackend(InpaintBackend):
@@ -124,6 +140,13 @@ _BACKENDS = {
 
 
 # ── 순수 디스패치 (의존성 없음 → 테스트) ─────────────────────────────────
+def crop_bounds(x_min: int, y_min: int, x_max: int, y_max: int,
+                margin: int, width: int, height: int) -> tuple[int, int, int, int]:
+    """마스크 bbox + 여백을 프레임 경계로 클램프한 크롭 좌표 (x1,y1,x2,y2)."""
+    return (max(0, x_min - margin), max(0, y_min - margin),
+            min(width, x_max + margin), min(height, y_max + margin))
+
+
 def select_backend(content_type: Optional[str], config: dict[str, Any]) -> str:
     """콘텐츠 타입 → 인페인트 백엔드 이름. (mukbang→sttn, anime→lama 등)"""
     icfg = config.get("inpaint", {})

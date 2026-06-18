@@ -207,7 +207,7 @@ def frames_to_video(frames_dir: str | os.PathLike, out: str | os.PathLike, fps: 
     if crf is not None and codec != "ffv1":
         cmd += ["-crf", str(crf)]
     if codec != "ffv1":
-        cmd += ["-pix_fmt", pix_fmt]
+        cmd += ["-pix_fmt", pix_fmt, "-movflags", "+faststart"]  # 플레이어 호환(moov 앞으로)
     cmd += [str(out)]
     _run(cmd)
     return out
@@ -219,9 +219,10 @@ def mux_audio(video: str | os.PathLike, audio: Optional[str | os.PathLike],
     out = Path(out)
     ensure_dir(out.parent)
     if audio is None:
-        _run(["ffmpeg", "-y", "-i", str(video), "-c", "copy", str(out)])
+        _run(["ffmpeg", "-y", "-i", str(video), "-c", "copy",
+              "-movflags", "+faststart", str(out)])
         return out
     _run(["ffmpeg", "-y", "-i", str(video), "-i", str(audio),
           "-c:v", "copy", "-c:a", "aac", "-shortest", "-map", "0:v:0", "-map", "1:a:0",
-          str(out)])
+          "-movflags", "+faststart", str(out)])
     return out

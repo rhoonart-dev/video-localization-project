@@ -2,8 +2,36 @@
 import pathlib
 import tempfile
 
-from src.dub import (_ass_time, _srt_time, build_alignment_report, parse_segments,
-                     require_level_c)
+from src.dub import (_ass_time, _srt_time, build_alignment_report, dub_backend,
+                     parse_segments, require_level_c, segment_ext, synthesize_segment)
+
+
+def test_dub_backend_default_and_override():
+    assert dub_backend({}) == "elevenlabs"
+    assert dub_backend({"dub": {"tts_backend": "xtts"}}) == "xtts"
+
+
+def test_segment_ext_by_backend():
+    assert segment_ext({"dub": {"tts_backend": "xtts"}}) == ".wav"
+    assert segment_ext({}) == ".mp3"
+
+
+def test_synthesize_xtts_requires_speaker_wav():
+    raised = False
+    try:
+        synthesize_segment("こんにちは", {"dub": {"tts_backend": "xtts"}}, speaker_wav=None)
+    except ValueError:
+        raised = True
+    assert raised
+
+
+def test_synthesize_elevenlabs_requires_voice_id():
+    raised = False
+    try:
+        synthesize_segment("x", {"dub": {"tts_backend": "elevenlabs"}}, voice_id=None)
+    except ValueError:
+        raised = True
+    assert raised
 
 
 def test_require_level_c_allows_c():

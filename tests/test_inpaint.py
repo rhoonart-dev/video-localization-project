@@ -1,5 +1,14 @@
 """engine/inpaint.py — 백엔드 디스패치 + 라이선스 가드."""
-from engine.inpaint import OpenCVBackend, make_inpainter, select_backend
+from engine.inpaint import OpenCVBackend, crop_bounds, make_inpainter, select_backend
+
+
+def test_crop_bounds_clamps_to_frame():
+    # 여백을 더해도 프레임(100x80) 경계를 넘지 않음
+    assert crop_bounds(5, 5, 90, 70, 24, 100, 80) == (0, 0, 100, 80)
+
+
+def test_crop_bounds_interior():
+    assert crop_bounds(40, 40, 60, 50, 10, 200, 200) == (30, 30, 70, 60)
 
 CFG = {
     "inpaint": {"default_backend": "opencv",

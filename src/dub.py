@@ -87,8 +87,41 @@ def build_alignment_report(video_id: str, segments: list[dict[str, Any]],
     }
 
 
-# ── TTS (ElevenLabs, lazy) ───────────────────────────────────────────────
-def synthesize_segment(text: str, voice_id: str, config: dict[str, Any]) -> bytes:
+# ── TTS 백엔드 (lazy) ─────────────────────────────────────────────────────
+def dub_backend(config: dict[str, Any]) -> str:
+    """xtts(오픈소스 보이스 클로닝) | elevenlabs."""
+    return config.get("dub", {}).get("tts_backend", "elevenlabs")
+
+
+def segment_ext(config: dict[str, Any]) -> str:
+    return ".wav" if dub_backend(config) == "xtts" else ".mp3"
+
+
+_XTTS_MODEL = None  # 프로세스당 1회 로드(무거움)
+
+
+def _xtts_model(config: dict[str, Any]):
+    global _XTTS_MODEL
+    if _XTTS_MODEL is None:
+        from TTS.api import TTS  # coqui-tts
+
+        name = config.get("dub", {}).get("xtts_model",
+                                         "tts_models/multilingual/multi-dataset/xtts_v2")
+        _XTTS_MODEL = TTS(name)
+    return _XTTS_MODEL
+
+
+def _synthesize_xtts(text: str, speaker_wav: str, config: dict[str, Any]) -> bytes:
+    """XTTS-v2 크로스링구얼 보이스 클로닝: speaker_wav 목소리로 language 음성 합성."""
+    import tempfile
+
+    lang = config.get("dub", {}).get("language", "ja")
+    out = tempfile.mktemp(suffix=".wav")
+    _xtts_model(config).tts_to_file(text=text, speaker_wav=speaker_wav, language=lang, file_path=out)
+    return Path(out).read_bytes()
+
+
+def _synthesize_elevenlabs(text: str, voice_id: str, config: dict[str, Any]) -> bytes:
     key = get_secret("ELEVENLABS_API_KEY", required=True)
     try:
         from elevenlabs.client import ElevenLabs
@@ -102,31 +135,51 @@ def synthesize_segment(text: str, voice_id: str, config: dict[str, Any]) -> byte
     return b"".join(audio) if hasattr(audio, "__iter__") else audio
 
 
-def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
-        voice_id: Optional[str] = None) -> dict[str, Any]:
-    require_level_c(level)
-    voice_id = voice_id or config.get("dub", {}).get("voice_id", "")
+def synthesize_segment(text: str, config: dict[str, Any], voice_id: Optional[str] = None,
+                       speaker_wav: Optional[str] = None) -> bytes:
+    if dub_backend(config) == "xtts":
+        if not speaker_wav:
+            raise ValueError("xtts 백엔드: speaker_wav(클로닝용 음성 샘플) 필요")
+        return _synthesize_xtts(text, speaker_wav, config)
     if not voice_id:
-        raise ValueError("voice_id 필요(일본 캐릭터 보이스 디렉션). --voice 또는 config.dub.voice_id")
+        raise ValueError("elevenlabs 백엔드: voice_id 필요")
+    return _synthesize_elevenlabs(text, voice_id, config)
+
+
+def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
+        voice_id: Optional[str] = None, speaker_wav: Optional[str] = None) -> dict[str, Any]:
+    require_level_c(level)
+    backend = dub_backend(config)
+    if backend == "xtts":
+        speaker_wav = speaker_wav or config.get("dub", {}).get("speaker_wav")
+        if not speaker_wav:
+            raise ValueError("xtts 백엔드: --speaker(클로닝용 루피 음성 샘플) 또는 config.dub.speaker_wav 필요")
+        voice_ref = speaker_wav
+    else:
+        voice_id = voice_id or config.get("dub", {}).get("voice_id", "")
+        if not voice_id:
+            raise ValueError("elevenlabs 백엔드: voice_id 필요. --voice 또는 config.dub.voice_id")
+        voice_ref = voice_id
 
     segments = parse_segments(subtitle_path)
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
     seg_dir = ensure_dir(base / "dub_segments")
-    log.warning("Level C 더빙 초안 생성. hero/리텐션 리스크는 사람 검토 필수.")
+    ext = segment_ext(config)
+    log.warning("Level C 더빙 초안 생성(backend=%s). hero/리텐션 리스크는 사람 검토 필수.", backend)
 
     seg_files: list[tuple[float, Path]] = []
     for i, seg in enumerate(segments):
-        data = synthesize_segment(seg["text"], voice_id, config)
-        fp = seg_dir / f"seg_{i:04d}.mp3"
+        data = synthesize_segment(seg["text"], config, voice_id=voice_id, speaker_wav=speaker_wav)
+        fp = seg_dir / f"seg_{i:04d}{ext}"
         fp.write_bytes(data)
         seg_files.append((seg["start"], fp))
 
     draft = base / "dub_ja_draft.wav"
     _assemble_timeline(seg_files, draft)
-    write_json(build_alignment_report(video_id, segments, voice_id),
+    write_json(build_alignment_report(video_id, segments, voice_ref),
                base / "alignment_report.json")
-    log.info("더빙 초안(검토 전): %s (세그먼트 %d)", draft, len(segments))
-    return {"draft": str(draft), "segments": len(segments)}
+    log.info("더빙 초안(검토 전): %s (세그먼트 %d, backend=%s)", draft, len(segments), backend)
+    return {"draft": str(draft), "segments": len(segments), "backend": backend}
 
 
 def _assemble_timeline(seg_files: list[tuple[float, Path]], out: Path) -> None:
@@ -157,14 +210,20 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--video-id", required=True)
     p.add_argument("--subtitle", required=True, help="ja.srt 또는 ja.ass")
     p.add_argument("--level", default="C", help="C 가 아니면 거부")
-    p.add_argument("--voice", default=None, help="ElevenLabs voice_id")
+    p.add_argument("--backend", default=None, help="xtts(오픈소스 클로닝) | elevenlabs")
+    p.add_argument("--speaker", default=None, help="xtts: 클로닝용 음성 샘플(wav/mp3) 경로")
+    p.add_argument("--voice", default=None, help="elevenlabs: voice_id")
     p.add_argument("--config", default=None)
     return p.parse_args(argv)
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = _parse_args(argv)
-    dub(args.video_id, args.subtitle, args.level, load_config(args.config), voice_id=args.voice)
+    config = load_config(args.config)
+    if args.backend:
+        config.setdefault("dub", {})["tts_backend"] = args.backend
+    dub(args.video_id, args.subtitle, args.level, config,
+        voice_id=args.voice, speaker_wav=args.speaker)
 
 
 if __name__ == "__main__":

@@ -89,6 +89,15 @@ upload:
   default_time: "19:00"            # JST 권장 게시 시간(측정 후 튜닝)
   auto_publish: false              # ⚠ 항상 false — 게시는 사람이 최종 클릭
 
+dub:                               # Level C 한정. 게이트 통과 후에만.
+  tts_backend: xtts                # xtts(오픈소스 보이스 클로닝) | elevenlabs(유료 키)
+  language: ja                     # 합성 언어
+  speaker_wav: null                # 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로
+  xtts_model: tts_models/multilingual/multi-dataset/xtts_v2
+  #  ⚠ XTTS-v2 가중치 라이선스 = Coqui Public Model License(비상업). 상업 사용 전 확인.
+  voice_id: null                   # elevenlabs 백엔드용 voice_id
+  tts_model: eleven_multilingual_v2
+
 select:
   # data/analytics CSV 컬럼 매핑 (실제 헤더에 맞게 수정)
   columns:
