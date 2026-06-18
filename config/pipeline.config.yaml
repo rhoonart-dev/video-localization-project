@@ -1,0 +1,107 @@
+# loopy-jp — 파이프라인 설정 (단일 진실 소스)
+# 등급별 옵션 · 인페인트 모드 매핑 · 폰트 매핑 · JST 시간대.
+# 코드가 직접 읽는다. 키 추가/변경 시 engine/common.py:load_config 확인.
+
+project:
+  name: loopy-jp
+  channel: ジャンマンルーピー
+  timezone: Asia/Tokyo            # 업로드 스케줄·리포트 타임스탬프 기준(JST)
+
+paths:
+  source_dir: data/source
+  analytics_dir: data/analytics
+  outputs_dir: outputs
+  weights_dir: weights
+  fonts_dir: fonts
+  persona: config/persona.md
+  font_map: config/font_map.yaml
+  glossary: config/glossary.yaml   # 없으면 무시
+
+# 현지화 등급 (A=자막중심, B=번인재편집, C=더빙포함)
+levels:
+  A:
+    inpaint: false
+    render_mode: subtitle          # ASS/SRT 트랙만, 화면 텍스트 제거 안 함
+    dub: false
+  B:
+    inpaint: true
+    render_mode: replace           # 화면 텍스트 제거 후 일본어 재합성
+    inpaint_mode: auto             # auto → content_type 으로 결정
+    dub: false
+  C:
+    inpaint: true
+    render_mode: replace
+    inpaint_mode: auto
+    dub: true                      # 게이트 통과 후에만 src/dub.py 호출
+
+detect:
+  ocr_backend: rapidocr            # rapidocr | paddleocr | easyocr
+  languages: [korean, en]
+  sample_every: 15                 # N프레임마다 OCR (속도/정확도)
+  min_confidence: 0.5              # 이하 confidence 는 flagged=true
+  merge_iou: 0.6                   # 인접 프레임 동일 영역 병합 IoU 임계
+  roi: null                        # [x1,y1,x2,y2] 주면 OCR 대신 고정 ROI 사용
+
+mask:
+  dilate_px: 8                     # bbox 팽창(잔여 글자 테두리 제거)
+  temporal_window: 5               # 슬라이딩 윈도우 크기(프레임)
+  temporal_strategy: union         # union | vote
+  vote_ratio: 0.4                  # vote 전략에서 마스크로 칠 최소 비율
+
+inpaint:
+  default_backend: opencv          # opencv(무가중치 폴백) | lama | sttn | propainter
+  mode_by_content:
+    mukbang: sttn                  # 실사 음식+캐릭터
+    anime: lama                    # 애니 위주 컷
+    high_motion: propainter        # ⚠ 상업 라이선스 확인 필요
+    default: lama
+  neighbor_stride: 5               # 비디오 인페인팅 참조 프레임 간격
+  propainter_commercial_ack: false # true 로 명시 안 하면 propainter 차단(라이선스 가드)
+
+translate:
+  provider: anthropic
+  model: claude-sonnet-4-6         # 대량 트랜스크리에이션 기본(품질·비용 균형)
+  hero_model: claude-opus-4-8      # hero 영상 등 고품질 필요 시
+  max_tokens: 1024
+  use_deepl_draft: false           # true 면 DeepL 초벌 병용(TRANSLATE_API_KEY 필요)
+  deepl_endpoint: https://api-free.deepl.com/v2/translate
+
+render:
+  default_mode: replace            # replace | subtitle
+  stroke_width: 3                  # 외곽선(가독성)
+  line_max_chars: 16               # 자막 1줄 권장 글자 수(persona 와 일치)
+  safe_margin_ratio: 0.05
+
+qa:
+  psnr_warn_below: 30.0
+  ssim_warn_below: 0.90
+  motion_flag_threshold: 0.35      # 프레임 차분 비율 이상이면 고움직임 플래그
+  sidebyside: true
+
+encode:
+  intermediate_codec: ffv1         # 무손실 중간본
+  final_codec: libx264             # libx264 | libx265 | libsvtav1
+  final_crf: 18
+  pixel_format: yuv420p
+
+upload:
+  timezone: Asia/Tokyo
+  default_time: "19:00"            # JST 권장 게시 시간(측정 후 튜닝)
+  auto_publish: false              # ⚠ 항상 false — 게시는 사람이 최종 클릭
+
+select:
+  # data/analytics CSV 컬럼 매핑 (실제 헤더에 맞게 수정)
+  columns:
+    video_id: video_id
+    title: title
+    views: views
+    retention: average_view_percentage
+    jp_share: jp_view_share        # 일본 시청 비중 (0~1 또는 0~100)
+  weights:
+    jp_share: 0.5                  # 일본 시청 비중 최우선
+    retention: 0.3
+    views: 0.2
+  level_keywords:                  # 제목 키워드 → 등급 추정
+    A: [먹방, asmr, mukbang, dance, 댄스, 릴스, eating, 디저트]
+    B: [개그, 짤, 밈, meme, 꼬깔, 자막, 챌린지]
+    C: [vlog, 브이로그, 일상, 대사, 더빙]

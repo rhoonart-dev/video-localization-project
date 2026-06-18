@@ -1,0 +1,35 @@
+# loopy-jp — 실제 import 되는 패키지만. (Python 3.12+)
+# 무거운 GPU/모델 의존성은 아래쪽에 주석으로 분리 — 필요한 백엔드만 설치.
+
+# === Core (CPU, 항상 필요) ===
+pyyaml>=6.0
+numpy>=1.26
+opencv-python>=4.9
+pillow>=10.0
+srt>=3.5
+scikit-image>=0.22
+python-dotenv>=1.0
+requests>=2.31
+
+# === OCR (engine/detect.py) — 최소 하나 설치. RapidOCR 가 기본 ===
+rapidocr-onnxruntime>=1.3
+# paddleocr>=2.7        # 정확도 ↑ 폴백. paddlepaddle(-gpu) 별도 필요
+# easyocr>=1.7          # 최후 폴백
+
+# === LLM 트랜스크리에이션 (engine/translate.py, src/metadata.py) ===
+anthropic>=0.40
+
+# === 인페인팅 백엔드 (engine/inpaint.py) — GPU(CUDA) 강력 권장 ===
+#   opencv 백엔드는 가중치 없이 동작하는 폴백(품질 낮음, 위 opencv-python로 충분).
+# torch>=2.2            # STTN / LaMa / ProPainter 공통 전제
+# torchvision>=0.17
+# simple-lama-inpainting>=0.1   # LaMa (Apache-2.0) — 상업 사용 가장 안전
+#   STTN:       weights/sttn/       에 가중치 배치 (저장소+가중치 라이선스 확인)
+#   ProPainter: weights/propainter/ 에 가중치 배치
+#               ⚠ S-Lab NON-COMMERCIAL 가능성 — 상업 사용 전 반드시 확인
+
+# === 선택: DeepL 초벌 번역 (engine/translate.py --deepl) ===
+#   TRANSLATE_API_KEY 로 DeepL REST 호출 (requests 사용, 추가 패키지 불필요)
+
+# === 선택: 더빙 TTS (src/dub.py, Level C 한정) ===
+# elevenlabs>=1.0
