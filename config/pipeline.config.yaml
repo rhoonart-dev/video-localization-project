@@ -97,6 +97,8 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   bg_volume: 0.3                   # 더빙 믹스 시 원본 오디오 볼륨(ASMR 보존 시 ↑, 완전대체 0)
   fit_to_timing: true              # 합성 음성을 자막 슬롯 길이에 맞게 time-stretch(싱크)
   max_speedup: 1.6                 # time-stretch 과도한 배속 방지 클램프
+  remove_original_vocals: false    # true 면 Demucs 로 원본 목소리 제거 후 더빙(반주만 유지)
+  demucs_model: htdemucs           # 보컬 분리 모델
   xtts_model: tts_models/multilingual/multi-dataset/xtts_v2
   #  ⚠ XTTS-v2 가중치 라이선스 = Coqui Public Model License(비상업). 상업 사용 전 확인.
   voice_id: null                   # elevenlabs 백엔드용 voice_id

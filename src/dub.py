@@ -218,6 +218,21 @@ def transcribe(media: str, config: dict[str, Any], language: str = "ko") -> list
             for s in segs if s.text.strip()]
 
 
+def separate_vocals(media: str, out_dir, config: dict[str, Any]) -> Path:
+    """Demucs 2-stem 분리 → no_vocals(반주·효과음) 스템 경로. 원본 목소리 제거용."""
+    import subprocess
+
+    out_dir = ensure_dir(out_dir)
+    model = config.get("dub", {}).get("demucs_model", "htdemucs")
+    subprocess.run([sys.executable, "-m", "demucs", "--two-stems", "vocals", "-n", model,
+                    "-o", str(out_dir), str(media)],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    nov = out_dir / model / Path(media).stem / "no_vocals.wav"
+    if not nov.exists():
+        raise RuntimeError(f"Demucs no_vocals 스템 없음: {nov}")
+    return nov
+
+
 def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any],
                    speaker_wav: Optional[str] = None, source_lang: str = "ko",
                    mux: bool = True) -> dict[str, Any]:
@@ -247,7 +262,13 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
 
     if mux:
         bg = float(config.get("dub", {}).get("bg_volume", 0.3))
-        out = _common.mux_dub(video, res["draft"], base / "final_dubbed.mp4", bg_volume=bg)
+        bg_audio = None
+        if config.get("dub", {}).get("remove_original_vocals", False):
+            bg_audio = str(separate_vocals(video, base / "stems", config))  # 원본 목소리 제거
+            bg = max(bg, 0.7)                                                # 반주는 더 살림
+            log.info("원본 보컬 제거(Demucs) → 반주 스템 믹스")
+        out = _common.mux_dub(video, res["draft"], base / "final_dubbed.mp4",
+                              bg_volume=bg, bg_audio=bg_audio)
         res["dubbed_video"] = str(out)
         log.info("더빙 영상(초안): %s", out)
     return res

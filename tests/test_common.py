@@ -92,3 +92,15 @@ def test_mux_dub_faststart_and_amix():
     cmd = calls[0]
     assert "+faststart" in cmd
     assert any("amix" in part for part in cmd)   # 원본+더빙 믹스
+    assert cmd.count("-i") == 2                   # bg_audio 없음 → 입력 2개(영상+더빙)
+
+
+def test_mux_dub_with_bg_audio_three_inputs():
+    calls, orig = _capture_run()
+    try:
+        common.mux_dub("/tmp/v.mp4", "/tmp/dub.wav", "/tmp/out.mp4", bg_audio="/tmp/novocals.wav")
+    finally:
+        common._run = orig
+    cmd = calls[0]
+    assert cmd.count("-i") == 3                   # 영상 + 반주스템 + 더빙
+    assert "/tmp/novocals.wav" in cmd
