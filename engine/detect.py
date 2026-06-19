@@ -90,11 +90,33 @@ class PaddleOCRBackend(OCRBackend):
         except ImportError as e:
             raise ImportError("paddleocr 필요: pip install paddleocr (+ paddlepaddle)") from e
         lang = "korean" if not languages or "korean" in languages else languages[0]
-        self._ocr = PaddleOCR(use_angle_cls=True, lang=lang, show_log=False)
+        try:   # 3.x: 문서 전처리(방향/언워핑) 끄면 한국어 인식 정확도가 크게 오름
+            self._ocr = PaddleOCR(lang=lang, use_doc_orientation_classify=False,
+                                  use_doc_unwarping=False, use_textline_orientation=False)
+        except (TypeError, ValueError):
+            self._ocr = PaddleOCR(lang=lang)   # 구버전 폴백
 
     def recognize(self, frame_bgr) -> list[OcrResult]:
+        # PaddleOCR 3.x: predict() → OCRResult(dict-like, rec_texts/rec_scores/rec_polys)
+        if hasattr(self._ocr, "predict"):
+            out: list[OcrResult] = []
+            for page in (self._ocr.predict(frame_bgr) or []):
+                texts = page.get("rec_texts", []) or []
+                scores = page.get("rec_scores", []) or []
+                polys = page.get("rec_polys", None)
+                if polys is None:
+                    polys = page.get("dt_polys", []) or []
+                for i, text in enumerate(texts):
+                    if not text:
+                        continue
+                    box = polys[i] if i < len(polys) else None
+                    bbox = quad_to_bbox([[float(p[0]), float(p[1])] for p in box]) \
+                        if box is not None else (0, 0, 0, 0)
+                    out.append((bbox, text, float(scores[i]) if i < len(scores) else 0.0))
+            return out
+        # 2.x 폴백
         res = self._ocr.ocr(frame_bgr, cls=True)
-        out: list[OcrResult] = []
+        out = []
         for line in (res[0] if res and res[0] else []):
             box, (text, score) = line
             out.append((quad_to_bbox(box), text, float(score)))

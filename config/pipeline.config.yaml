@@ -35,7 +35,8 @@ levels:
     dub: true                      # 게이트 통과 후에만 src/dub.py 호출
 
 detect:
-  ocr_backend: rapidocr            # rapidocr | paddleocr | easyocr
+  ocr_backend: paddleocr           # 한국어 소스 → paddleocr 권장(한글 인식 우수). rapidocr=경량 폴백
+                                   #   ※ 스타일화된 밈 폰트/「~뤂」는 여전히 ROI+사람 검수 보완 권장
   languages: [korean, en]
   sample_every: 15                 # N프레임마다 OCR (속도/정확도)
   min_confidence: 0.5              # 이하 confidence 는 flagged=true
