@@ -255,3 +255,21 @@ def mux_dub(video: str | os.PathLike, dub_audio: str | os.PathLike,
             "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", str(out)]
     _run(cmd)
     return out
+
+
+def burn_subtitles(video: str | os.PathLike, ass_path: str | os.PathLike,
+                   out: str | os.PathLike, fonts_dir: Optional[str | os.PathLike] = None,
+                   crf: int = 18, pix_fmt: str = "yuv420p") -> Path:
+    """ASS 자막을 영상에 번인(원본 영상 위에 덧입힘). 오디오는 그대로 복사, faststart.
+
+    원본 한국어 자막은 화면에 남아 있고, ASS 의 일본어가 그 위/아래에 추가로 렌더된다.
+    """
+    out = Path(out)
+    ensure_dir(out.parent)
+    af = f"ass={ass_path}"
+    if fonts_dir:
+        af += f":fontsdir={fonts_dir}"
+    _run(["ffmpeg", "-y", "-i", str(video), "-vf", af,
+          "-c:v", "libx264", "-crf", str(crf), "-pix_fmt", pix_fmt,
+          "-c:a", "copy", "-movflags", "+faststart", str(out)])
+    return out

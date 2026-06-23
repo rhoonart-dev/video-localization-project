@@ -1,6 +1,6 @@
 """engine/render.py — 폰트 해석 / 래핑 / 타임코드 / ASS·SRT 빌드 / 이벤트 병합."""
-from engine.render import (_align_code, ass_timestamp, build_ass, build_srt,
-                           detections_to_events, resolve_font, wrap_text)
+from engine.render import (_align_code, ass_timestamp, build_ass, build_bilingual_ass,
+                           build_srt, detections_to_events, resolve_font, wrap_text)
 from engine.schemas import DetectionDoc, FrameDetections, Region, Style
 
 FONT_MAP = {
@@ -63,3 +63,18 @@ def test_detections_to_events_merges_consecutive():
     ev = detections_to_events(doc, {"안녕": "やあ"})
     assert len(ev) == 1 and ev[0]["text"] == "やあ"
     assert ev[0]["end"] > ev[0]["start"]
+    assert ev[0]["bbox"] == (0, 80, 100, 100)        # 한국어 위치(일본어 배치용)
+
+
+def test_build_bilingual_ass_above_uses_pos_and_an2():
+    ev = [{"start": 0.0, "end": 1.0, "text": "やあ", "bbox": (300, 600, 900, 660)}]
+    out = build_bilingual_ass(ev, 1280, 720, 16, position="above")
+    assert "\\pos(600,592)" in out      # 한국어 bbox 위(600 - gap 8), 중앙 x=600
+    assert "\\an2" in out               # 하단중앙 앵커 → 텍스트가 위로
+    assert "やあ" in out
+
+
+def test_build_bilingual_ass_below_uses_an8():
+    ev = [{"start": 0.0, "end": 1.0, "text": "やあ", "bbox": (300, 100, 900, 160)}]
+    out = build_bilingual_ass(ev, 1280, 720, 16, position="below")
+    assert "\\an8" in out and "\\pos(600,168)" in out   # bbox 아래(160 + gap 8)

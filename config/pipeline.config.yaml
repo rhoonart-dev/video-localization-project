@@ -68,10 +68,11 @@ translate:
   deepl_endpoint: https://api-free.deepl.com/v2/translate
 
 render:
-  default_mode: replace            # replace | subtitle
+  default_mode: replace            # replace(번인 교체) | subtitle(트랙) | bilingual(한+일 병기)
   stroke_width: 3                  # 외곽선(가독성)
   line_max_chars: 16               # 자막 1줄 권장 글자 수(persona 와 일치)
   safe_margin_ratio: 0.05
+  overlay_position: above          # bilingual 모드: 한국어 자막 위(above)/아래(below)에 일본어
 
 qa:
   psnr_warn_below: 30.0

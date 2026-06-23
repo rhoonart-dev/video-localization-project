@@ -96,6 +96,17 @@ def test_mux_dub_faststart_and_amix():
     assert cmd.count("-i") == 2                       # bg_audio 없음 → 입력 2개(영상+더빙)
 
 
+def test_burn_subtitles_uses_ass_filter_and_faststart():
+    calls, orig = _capture_run()
+    try:
+        common.burn_subtitles("/tmp/v.mp4", "/tmp/ja.ass", "/tmp/out.mp4")
+    finally:
+        common._run = orig
+    cmd = calls[0]
+    assert any("ass=/tmp/ja.ass" in part for part in cmd)   # 자막 번인
+    assert "+faststart" in cmd and "copy" in cmd            # 오디오 복사 + faststart
+
+
 def test_mux_dub_with_bg_audio_three_inputs():
     calls, orig = _capture_run()
     try:

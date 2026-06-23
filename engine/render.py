@@ -104,6 +104,49 @@ def build_ass(events: list[dict[str, Any]], width: int, height: int,
     return "\n".join(lines) + "\n"
 
 
+def build_bilingual_ass(events: list[dict[str, Any]], width: int, height: int,
+                        line_max_chars: int = 16, font_name: str = "Noto Sans JP",
+                        position: str = "above", gap_px: int = 8) -> str:
+    """한국어 자막은 그대로 두고, 그 위/아래에 일본어를 \\pos 로 덧붙이는 ASS.
+
+    position="above": 한국어 bbox 위에(일본어 하단이 bbox 상단-gap), \\an2(하단중앙) 기준.
+    position="below": 한국어 bbox 아래에(일본어 상단이 bbox 하단+gap), \\an8(상단중앙) 기준.
+    bbox 없는 이벤트는 화면 상/하단 가장자리에 배치.
+    """
+    fs = max(20, height // 22)
+    header = [
+        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}",
+        "WrapStyle: 0", "",
+        "[V4+ Styles]",
+        ("Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
+         "Bold, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"),
+        f"Style: JP,{font_name},{fs},&H0000FFFF,&H00000000,&H00000000,1,3,0,2,10,10,10,1",
+        "",  # 일본어=노란색(&H0000FFFF, BGR)로 한국어와 구분
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    lines = list(header)
+    for ev in events:
+        wrapped = wrap_text(ev["text"], line_max_chars)
+        if not wrapped:
+            continue
+        text = "\\N".join(wrapped)
+        bbox = ev.get("bbox")
+        if bbox:
+            cx = (bbox[0] + bbox[2]) // 2
+            if position == "below":
+                an, y = 8, min(height - 4, bbox[3] + gap_px)         # 한국어 아래
+            else:
+                an, y = 2, max(4, bbox[1] - gap_px)                  # 한국어 위
+            tag = f"{{\\an{an}\\pos({cx},{y})}}"
+        else:   # bbox 없으면 가장자리
+            tag = "{\\an8}" if position == "below" else "{\\an2}"
+        lines.append(
+            f"Dialogue: 0,{ass_timestamp(ev['start'])},{ass_timestamp(ev['end'])},"
+            f"JP,,0,0,0,,{tag}{text}")
+    return "\n".join(lines) + "\n"
+
+
 def build_srt(events: list[dict[str, Any]], line_max_chars: int = 16) -> str:
     """events → SRT 문자열(srt 라이브러리 있으면 사용, 없으면 수동)."""
     valid = [e for e in events if e.get("text", "").strip()]
@@ -156,7 +199,8 @@ def detections_to_events(doc: DetectionDoc, tmap: dict[str, str]) -> list[dict[s
             present.add(src)
             if src not in active:
                 active[src] = {"start": fr.timestamp, "end": fr.timestamp + step_t,
-                               "text": tmap[src], "position": r.style.position}
+                               "text": tmap[src], "position": r.style.position,
+                               "bbox": r.bbox}    # 한국어 자막 위치(일본어 위/아래 배치용)
             else:
                 active[src]["end"] = fr.timestamp + step_t
         for src in list(active):
@@ -239,6 +283,13 @@ def render(doc_path: str, translations_path: str, config: dict[str, Any],
             raise ValueError("replace 모드는 --inpainted (인페인팅된 프레임) 필요")
         result["frames"] = str(render_replace(inpainted_dir, doc, tmap, config,
                                               str(base / "rendered"), font_map))
+    elif mode == "bilingual":
+        # 한국어 자막 유지 + 그 위/아래에 일본어 추가(인페인팅 없음). 원본 영상에 번인.
+        pos = config.get("render", {}).get("overlay_position", "above")
+        bi = base / "ja_bilingual.ass"
+        bi.write_text(build_bilingual_ass(events, doc.width, doc.height, line_max, position=pos),
+                      encoding="utf-8")
+        result["bilingual_ass"] = str(bi)
     log.info("렌더 완료(초벌, 검수 전) mode=%s → %s", mode, result)
     return result
 
