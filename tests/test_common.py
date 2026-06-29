@@ -116,3 +116,30 @@ def test_mux_dub_with_bg_audio_three_inputs():
     cmd = calls[0]
     assert cmd.count("-i") == 3                   # 영상 + 반주스템 + 더빙
     assert "/tmp/novocals.wav" in cmd
+
+
+def test_mux_dub_limiter_no_loudnorm():
+    """limiter=True, loudnorm=False → alimiter 로 피크만 제한(ASMR 다이내믹 보존)."""
+    calls, orig = _capture_run()
+    try:
+        common.mux_dub("/tmp/v.mp4", "/tmp/dub.wav", "/tmp/out.mp4",
+                       loudnorm=False, limiter=True, limit=0.95)
+    finally:
+        common._run = orig
+    cmd = calls[0]
+    filt = next(p for p in cmd if "amix" in p)
+    assert "alimiter=limit=0.95" in filt          # 브릭월 리미터 적용
+    assert "loudnorm" not in filt                  # 다이내믹 squash 안 함
+
+
+def test_mux_dub_no_limiter_no_loudnorm_passthrough():
+    """둘 다 off → 후처리 필터 없이 amix 결과를 그대로 출력."""
+    calls, orig = _capture_run()
+    try:
+        common.mux_dub("/tmp/v.mp4", "/tmp/dub.wav", "/tmp/out.mp4",
+                       loudnorm=False, limiter=False)
+    finally:
+        common._run = orig
+    filt = next(p for p in calls[0] if "amix" in p)
+    assert "alimiter" not in filt and "loudnorm" not in filt
+    assert filt.endswith("[a]")

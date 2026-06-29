@@ -232,13 +232,16 @@ def mux_dub(video: str | os.PathLike, dub_audio: str | os.PathLike,
             out: str | os.PathLike, bg_volume: float = 0.3,
             voice_volume: float = 1.8,
             bg_audio: Optional[str | os.PathLike] = None,
-            loudnorm: bool = True) -> Path:
+            loudnorm: bool = True, limiter: bool = False,
+            limit: float = 0.95) -> Path:
     """배경 오디오(낮춤=더킹) + 더빙 보이스 믹스 → 영상에 입힘(faststart).
 
     bg_audio=None: 영상의 원본 오디오를 배경으로 사용.
     bg_audio 지정: 원본 대신 그 트랙(예: 보컬 제거 스템)을 배경으로 → 원본 목소리 제거.
     bg_volume=0 이면 배경 완전 제거(더빙만). ASMR 등은 bg_volume 을 높여 원음 보존.
     loudnorm=True: 최종 라우드니스 정규화(EBU R128, -16 LUFS — 플랫폼 표준에 근접).
+    limiter=True(loudnorm=False 일 때): 브릭월 리미터(alimiter)로 피크만 제한 →
+        ASMR 다이내믹은 보존하면서 합산 클리핑(째짐) 방지. limit=최대 진폭(0~1).
     """
     out = Path(out)
     ensure_dir(out.parent)
@@ -250,7 +253,13 @@ def mux_dub(video: str | os.PathLike, dub_audio: str | os.PathLike,
         cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(dub_audio)]
         pre = (f"[0:a]volume={bg_volume}[bg];[1:a]volume={voice_volume}[voc];"
                f"[bg][voc]amix=inputs=2:duration=first:normalize=0")
-    filt = pre + ("[mix];[mix]loudnorm=I=-16:TP=-1.5:LRA=11[a]" if loudnorm else "[a]")
+    if loudnorm:
+        post = "[mix];[mix]loudnorm=I=-16:TP=-1.5:LRA=11[a]"
+    elif limiter:
+        post = f"[mix];[mix]alimiter=limit={limit}[a]"   # 피크만 제한, 다이내믹 보존
+    else:
+        post = "[a]"
+    filt = pre + post
     cmd += ["-filter_complex", filt, "-map", "0:v", "-map", "[a]",
             "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", str(out)]
     _run(cmd)

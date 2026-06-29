@@ -92,15 +92,43 @@ upload:
   auto_publish: false              # ⚠ 항상 false — 게시는 사람이 최종 클릭
 
 dub:                               # Level C 한정. 게이트 통과 후에만.
-  tts_backend: xtts                # xtts(오픈소스 보이스 클로닝) | elevenlabs(유료 키)
-  language: ja                     # 합성 언어
-  speaker_wav: null                # 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로
-  asr_model: base                  # faster-whisper 모델(영상→더빙 받아쓰기): base|small|medium
-  bg_volume: 0.3                   # 더빙 믹스 시 원본 오디오 볼륨(ASMR 보존 시 ↑, 완전대체 0)
+  tts_backend: gptsovits           # gptsovits(루피 음색 크로스링구얼 클로닝, 권장) | xtts | elevenlabs
+  language: ja                     # 기본 합성 언어(세그별 영어 대사는 자동 감지해 en 유지)
+  speaker_wav: null                # xtts 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로
+  asr_model: small                 # faster-whisper 모델(영상→더빙 받아쓰기): base|small|medium
+  bg_volume: 0.4                   # 더빙 믹스 시 배경 볼륨(ASMR 보존 ↑, 완전대체 0)
+  voice_volume: 1.1                # 더빙 보이스 볼륨(limiter 가 피크 제한)
   fit_to_timing: true              # 합성 음성을 자막 슬롯 길이에 맞게 time-stretch(싱크)
-  max_speedup: 1.6                 # time-stretch 과도한 배속 방지 클램프
-  remove_original_vocals: false    # true 면 Demucs 로 원본 목소리 제거 후 더빙(반주만 유지)
+  max_speedup: 1.6                 # time-stretch 과도한 배속 방지 클램프(세그별 침범 캡과 병행)
+  voice_norm_peak: 0.9             # 어셈블된 보이스 트랙 피크 정규화(헤드룸 확보)
+  loudnorm: false                  # ASMR 다이내믹 보존 → EBU R128 정규화 끔
+  limiter: true                    # 최종 믹스 피크만 제한(브릭월) → 합산 클리핑(째짐) 방지
+  peak_limit: 0.97                 # 리미터 상한(0~1)
+  remove_original_vocals: false    # true 면 Demucs 로 원본 목소리 제거 후 더빙(ASMR/반주만 유지)
   demucs_model: htdemucs           # 보컬 분리 모델
+  gptsovits:                       # 루피 음색 클로닝(GPT-SoVITS v2). 환경/모델 영구 위치.
+    repo_dir: outputs/GPT-SoVITS   # 소스 체크아웃(상대→프로젝트 루트). /tmp 정리 회피용 영구 위치
+    model_dir: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained
+    gpt_ckpt: s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
+    sovits_ckpt: s2G2333k.pth
+    ref_wav: outputs/GPT-SoVITS/loopy_clips10/c5.wav   # 메인 레퍼런스(전사 보유 구간)
+    prompt_text: 마라엽떡 엽기닭발 로제마라샹궈 크림새우 그리고 치킨까지 준비해보았습니다
+    prompt_lang: ko                # 레퍼런스(루피) 음성 언어
+    aux_refs:                      # 멀티레퍼런스 음색 보강(여러 클립 → 안정/유사도 ↑)
+      - outputs/GPT-SoVITS/loopy_clips10/c0.wav
+      - outputs/GPT-SoVITS/loopy_clips10/c1.wav
+      - outputs/GPT-SoVITS/loopy_clips10/c2.wav
+      - outputs/GPT-SoVITS/loopy_clips10/c3.wav
+      - outputs/GPT-SoVITS/loopy_clips10/c4.wav
+      - outputs/GPT-SoVITS/loopy_clips10/c6.wav
+      - outputs/GPT-SoVITS/loopy_clips10/c7.wav
+      - outputs/GPT-SoVITS/loopy_clips10/c8.wav
+      - outputs/GPT-SoVITS/loopy_clips10/c9.wav
+    top_k: 20
+    top_p: 0.6
+    temperature: 0.6
+    retry_tries: 6                 # 환각(비정상 장발화) 시 재합성 횟수
+    max_synth_dur: 12.0            # 이 길이 초과면 환각으로 보고 재시도
   xtts_model: tts_models/multilingual/multi-dataset/xtts_v2
   #  ⚠ XTTS-v2 가중치 라이선스 = Coqui Public Model License(비상업). 상업 사용 전 확인.
   voice_id: null                   # elevenlabs 백엔드용 voice_id

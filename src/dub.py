@@ -89,6 +89,69 @@ def atempo_filters(speed: float) -> str:
     return ",".join(parts)
 
 
+# ── 더빙 견고화 순수 로직 (싱크 / 환각방지 / 클리핑) ──────────────────────
+def _fit_speed(dur: float, target: float, max_speedup: float = 1.6,
+               min_slowdown: float = 0.7) -> float:
+    """슬롯에 맞추기 위한 배속 비율. 과속(max_speedup)·과늘림(min_slowdown) 클램프."""
+    if dur <= 0 or target <= 0:
+        return 1.0
+    speed = dur / target
+    return min(speed, max_speedup) if speed > 1 else max(speed, min_slowdown)
+
+
+def _needs_truncate(dur: float, max_len: Optional[float]) -> bool:
+    """배속 후에도 슬롯(다음 세그 시작)을 넘으면 잘라야 한다(드론/겹침 방지)."""
+    return max_len is not None and dur > max_len + 0.05
+
+
+def segment_hard_caps(spans: list[tuple[float, float]], guard: float = 0.05,
+                      tail: float = 0.5) -> list[float]:
+    """각 세그가 '다음 세그 시작'을 침범하지 않도록 최대 길이 캡 산출.
+
+    한 세그의 합성이 환각으로 길어져도 다음 발화 위로 겹쳐 깔리는('에~~~' 드론)
+    현상을 구조적으로 차단한다. 마지막 세그는 슬롯+tail 까지 허용.
+    """
+    caps: list[float] = []
+    n = len(spans)
+    for i, (s, e) in enumerate(spans):
+        if i + 1 < n:
+            caps.append(max(0.2, spans[i + 1][0] - s - guard))
+        else:
+            caps.append((e - s) + tail)
+    return caps
+
+
+def synthesize_with_retry(synth_fn, max_dur: float, tries: int = 5):
+    """TTS 환각(비정상적으로 긴 출력) 방지: max_dur 이하가 나올 때까지 재합성.
+
+    synth_fn() → (sr, audio[len 측정 가능]). 전부 길면 가장 짧은 결과를 반환(이후 캡됨).
+    """
+    best = None
+    best_d = float("inf")
+    for _ in range(max(1, tries)):
+        sr, audio = synth_fn()
+        d = (len(audio) / sr) if sr else 0.0
+        if d < best_d:
+            best, best_d = (sr, audio), d
+        if d <= max_dur:
+            return sr, audio
+    return best
+
+
+def _norm_scale(peak: float, target: float = 0.9) -> float:
+    """보이스 트랙 피크 정규화 배율(헤드룸 확보 → limiter 펌핑 최소화). 무음 보호."""
+    return (target / peak) if peak > 0 else 1.0
+
+
+def _detect_lang(text: str, default: str = "ja") -> str:
+    """세그 텍스트 언어 추정(영어 대사는 영어로 합성 유지). 라틴문자 위주면 en."""
+    letters = re.sub(r"[^A-Za-z぀-ヿ一-鿿가-힣]", "", text)
+    if not letters:
+        return default
+    ascii_alpha = sum(1 for c in letters if c.isascii() and c.isalpha())
+    return "en" if ascii_alpha / len(letters) > 0.7 else default
+
+
 def build_alignment_report(video_id: str, segments: list[dict[str, Any]],
                            voice_id: str) -> dict[str, Any]:
     return {
@@ -103,12 +166,12 @@ def build_alignment_report(video_id: str, segments: list[dict[str, Any]],
 
 # ── TTS 백엔드 (lazy) ─────────────────────────────────────────────────────
 def dub_backend(config: dict[str, Any]) -> str:
-    """xtts(오픈소스 보이스 클로닝) | elevenlabs."""
+    """gptsovits(루피 음색 크로스링구얼 클로닝, 권장) | xtts | elevenlabs."""
     return config.get("dub", {}).get("tts_backend", "elevenlabs")
 
 
 def segment_ext(config: dict[str, Any]) -> str:
-    return ".wav" if dub_backend(config) == "xtts" else ".mp3"
+    return ".wav" if dub_backend(config) in ("xtts", "gptsovits") else ".mp3"
 
 
 _XTTS_MODEL = None  # 프로세스당 1회 로드(무거움)
@@ -135,6 +198,72 @@ def _synthesize_xtts(text: str, speaker_wav: str, config: dict[str, Any]) -> byt
     return Path(out).read_bytes()
 
 
+_GSV = None  # GPT-SoVITS 핸들(프로세스당 1회 로드)
+
+
+def _gptsovits_handle(config: dict[str, Any]):
+    """GPT-SoVITS 추론 모듈 로드 + 가중치 적용(1회). config.dub.gptsovits 로 경로 지정.
+
+    repo_dir/model_dir 는 상대경로면 프로젝트 루트 기준. CPU 로 구동(Apple Silicon 안정).
+    """
+    global _GSV
+    if _GSV is not None:
+        return _GSV
+    import os as _os
+    import sys as _sys
+
+    g = config.get("dub", {}).get("gptsovits", {})
+    repo = resolve_path(g.get("repo_dir", "outputs/GPT-SoVITS"))
+    _os.environ.setdefault("is_half", "False")
+    _sys.path.insert(0, str(repo))
+    _sys.path.insert(0, str(repo / "GPT_SoVITS"))
+    cwd = _os.getcwd()
+    _os.chdir(repo)                                  # 상대 pretrained_models 경로 해석용
+    try:
+        import GPT_SoVITS.inference_webui as iw
+        iw.device = "cpu"; iw.is_half = False
+        md = repo / g.get("model_dir", "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained")
+        iw.change_gpt_weights(gpt_path=str(md / g.get(
+            "gpt_ckpt", "s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt")))
+        iw.change_sovits_weights(sovits_path=str(md / g.get("sovits_ckpt", "s2G2333k.pth")))
+        from tools.i18n.i18n import I18nAuto
+        i18n = I18nAuto()
+        _GSV = {"iw": iw, "lang": {"ja": i18n("日文"), "en": i18n("英文"), "ko": i18n("韩文")}}
+    finally:
+        _os.chdir(cwd)
+    return _GSV
+
+
+def _synthesize_gptsovits(text: str, lang: str, config: dict[str, Any]) -> bytes:
+    """루피 음색 크로스링구얼 클로닝(한국어 ref → ja/en 합성). 멀티레퍼런스 + 환각방지 재시도."""
+    import tempfile
+    from types import SimpleNamespace
+
+    import soundfile as sf
+
+    g = config.get("dub", {}).get("gptsovits", {})
+    h = _gptsovits_handle(config)
+    iw = h["iw"]
+    aux = [SimpleNamespace(name=str(resolve_path(p))) for p in g.get("aux_refs", [])]
+
+    def _one():
+        res = iw.get_tts_wav(
+            ref_wav_path=str(resolve_path(g["ref_wav"])),
+            prompt_text=g["prompt_text"],
+            prompt_language=h["lang"][g.get("prompt_lang", "ko")],
+            text=text, text_language=h["lang"].get(lang, h["lang"]["ja"]),
+            top_k=int(g.get("top_k", 20)), top_p=float(g.get("top_p", 0.6)),
+            temperature=float(g.get("temperature", 0.6)), inp_refs=(aux or None))
+        sr, audio = list(res)[-1]
+        return sr, audio
+
+    sr, audio = synthesize_with_retry(_one, max_dur=float(g.get("max_synth_dur", 12.0)),
+                                      tries=int(g.get("retry_tries", 6)))
+    out = tempfile.mktemp(suffix=".wav")
+    sf.write(out, audio, sr)
+    return Path(out).read_bytes()
+
+
 def _synthesize_elevenlabs(text: str, voice_id: str, config: dict[str, Any]) -> bytes:
     key = get_secret("ELEVENLABS_API_KEY", required=True)
     try:
@@ -150,8 +279,12 @@ def _synthesize_elevenlabs(text: str, voice_id: str, config: dict[str, Any]) -> 
 
 
 def synthesize_segment(text: str, config: dict[str, Any], voice_id: Optional[str] = None,
-                       speaker_wav: Optional[str] = None) -> bytes:
-    if dub_backend(config) == "xtts":
+                       speaker_wav: Optional[str] = None, lang: Optional[str] = None) -> bytes:
+    backend = dub_backend(config)
+    if backend == "gptsovits":
+        seg_lang = lang or _detect_lang(text, config.get("dub", {}).get("language", "ja"))
+        return _synthesize_gptsovits(text, seg_lang, config)
+    if backend == "xtts":
         if not speaker_wav:
             raise ValueError("xtts 백엔드: speaker_wav(클로닝용 음성 샘플) 필요")
         return _synthesize_xtts(text, speaker_wav, config)
@@ -183,21 +316,23 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
 
     fit = config.get("dub", {}).get("fit_to_timing", True)
     max_sp = float(config.get("dub", {}).get("max_speedup", 1.6))
+    caps = segment_hard_caps([(s.get("start", 0.0), s.get("end", 0.0)) for s in segments])
     seg_files: list[tuple[float, Path]] = []
     for i, seg in enumerate(segments):
         data = synthesize_segment(seg["text"], config, voice_id=voice_id, speaker_wav=speaker_wav)
         fp = seg_dir / f"seg_{i:04d}{ext}"
         slot = seg.get("end", 0) - seg.get("start", 0)
-        if fit and slot > 0:                          # 슬롯 길이에 맞게 time-stretch(싱크)
+        if fit and slot > 0:                          # 슬롯 길이에 맞게 time-stretch(싱크) + 침범 캡
             raw = seg_dir / f"seg_{i:04d}_raw{ext}"
             raw.write_bytes(data)
-            _fit_audio(raw, fp, slot, max_speedup=max_sp)
+            _fit_audio(raw, fp, slot, max_speedup=max_sp, max_len=caps[i])
         else:
             fp.write_bytes(data)
         seg_files.append((seg["start"], fp))
 
     draft = base / "dub_ja_draft.wav"
     _assemble_timeline(seg_files, draft)
+    _normalize_track(draft, float(config.get("dub", {}).get("voice_norm_peak", 0.9)))
     write_json(build_alignment_report(video_id, segments, voice_ref),
                base / "alignment_report.json")
     log.info("더빙 초안(검토 전): %s (세그먼트 %d, backend=%s)", draft, len(segments), backend)
@@ -261,34 +396,53 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     res = dub(video_id, str(ja_srt), level, config, speaker_wav=speaker_wav)
 
     if mux:
-        bg = float(config.get("dub", {}).get("bg_volume", 0.3))
+        dconf = config.get("dub", {})
+        bg = float(dconf.get("bg_volume", 0.3))
         bg_audio = None
-        if config.get("dub", {}).get("remove_original_vocals", False):
+        if dconf.get("remove_original_vocals", False):
             bg_audio = str(separate_vocals(video, base / "stems", config))  # 원본 목소리 제거
-            bg = max(bg, 0.7)                                                # 반주는 더 살림
+            bg = max(bg, 0.4)                                                # ASMR/반주 보존
             log.info("원본 보컬 제거(Demucs) → 반주 스템 믹스")
+        # ASMR 다이내믹 보존: loudnorm 대신 limiter 로 피크만 제한(째짐 방지)
         out = _common.mux_dub(video, res["draft"], base / "final_dubbed.mp4",
-                              bg_volume=bg, bg_audio=bg_audio)
+                              bg_volume=bg, voice_volume=float(dconf.get("voice_volume", 1.1)),
+                              bg_audio=bg_audio, loudnorm=bool(dconf.get("loudnorm", False)),
+                              limiter=bool(dconf.get("limiter", True)),
+                              limit=float(dconf.get("peak_limit", 0.97)))
         res["dubbed_video"] = str(out)
         log.info("더빙 영상(초안): %s", out)
     return res
 
 
-def _fit_audio(in_path: Path, out_path: Path, target_sec: float, max_speedup: float = 1.6) -> None:
-    """합성 음성을 슬롯 길이에 맞게 time-stretch(피치 유지). 과도한 변형은 클램프."""
+def _fit_audio(in_path: Path, out_path: Path, target_sec: float, max_speedup: float = 1.6,
+               max_len: Optional[float] = None) -> None:
+    """합성 음성을 슬롯 길이에 맞게 time-stretch(피치 유지). 과도한 변형은 클램프.
+
+    max_len 지정 시: 배속 후에도 그 길이를 넘으면 잘라내고 끝에 짧은 페이드아웃.
+    → 한 세그의 환각/과길이가 '다음 발화' 위로 겹쳐 깔리는 드론을 구조적으로 차단.
+    """
     import subprocess
 
     dur = common.probe(in_path).get("duration", 0.0)
     if dur <= 0 or target_sec <= 0:
         out_path.write_bytes(in_path.read_bytes())
-        return
-    speed = dur / target_sec                       # >1 = 너무 길어 빠르게
-    speed = min(speed, max_speedup) if speed > 1 else max(speed, 0.7)
-    if abs(speed - 1.0) < 0.05:                    # 충분히 근접 → 그대로
-        out_path.write_bytes(in_path.read_bytes())
-        return
-    subprocess.run(["ffmpeg", "-y", "-i", str(in_path), "-filter:a", atempo_filters(speed),
-                    str(out_path)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        speed = _fit_speed(dur, target_sec, max_speedup)
+        if abs(speed - 1.0) < 0.05:                # 충분히 근접 → 그대로
+            out_path.write_bytes(in_path.read_bytes())
+        else:
+            subprocess.run(["ffmpeg", "-y", "-i", str(in_path), "-filter:a",
+                            atempo_filters(speed), str(out_path)],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if max_len is not None:                         # 침범 방지 캡
+        cur = common.probe(out_path).get("duration", 0.0)
+        if _needs_truncate(cur, max_len):
+            tmp = out_path.with_suffix(".cap" + out_path.suffix)
+            fade_st = max(0.0, max_len - 0.12)
+            subprocess.run(["ffmpeg", "-y", "-i", str(out_path), "-t", f"{max_len:.3f}",
+                            "-af", f"afade=t=out:st={fade_st:.3f}:d=0.12", str(tmp)],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            tmp.replace(out_path)
 
 
 def _assemble_timeline(seg_files: list[tuple[float, Path]], out: Path) -> None:
@@ -312,6 +466,20 @@ def _assemble_timeline(seg_files: list[tuple[float, Path]], out: Path) -> None:
         f"amix=inputs={len(seg_files)}:normalize=0[out]"
     cmd += ["-filter_complex", filt, "-map", "[out]", str(out)]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _normalize_track(wav: Path, target_peak: float = 0.9) -> None:
+    """보이스 트랙 피크 정규화(헤드룸 확보). amix 합산 후 클리핑/limiter 펌핑 완화."""
+    try:
+        import numpy as np
+        import soundfile as sf
+    except ImportError:                              # 의존성 없으면 건너뜀(원본 유지)
+        return
+    a, sr = sf.read(str(wav))
+    peak = float(np.max(np.abs(a))) if a.size else 0.0
+    scale = _norm_scale(peak, target_peak)
+    if abs(scale - 1.0) > 1e-3:
+        sf.write(str(wav), a * scale, sr)
 
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
