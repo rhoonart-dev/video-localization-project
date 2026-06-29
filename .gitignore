@@ -1,0 +1,39 @@
+# --- 시크릿 ---
+.env
+*.key
+
+# --- 모델 가중치 (용량/라이선스) ---
+weights/**
+!weights/.gitkeep
+!weights/README.md
+!weights/download.sh
+
+# --- 대용량 미디어 ---
+data/source/**
+!data/source/.gitkeep
+data/analytics/*.csv
+# 데모/테스트 픽스처(합성 데이터)는 커밋
+!data/analytics/sample_analytics.csv
+outputs/**
+!outputs/.gitkeep
+
+# --- 폰트 (라이선스에 따라 커밋 금지일 수 있음 — 기본 무시) ---
+fonts/*.ttf
+fonts/*.otf
+fonts/*.ttc
+!fonts/.gitkeep
+!fonts/README.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+.venv*/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- OS / 에디터 ---
+.DS_Store
+.idea/
+.vscode/

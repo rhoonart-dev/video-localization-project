@@ -1,0 +1,42 @@
+# loopy-jp — 실제 import 되는 패키지만. (Python 3.12+)
+# 무거운 GPU/모델 의존성은 아래쪽에 주석으로 분리 — 필요한 백엔드만 설치.
+
+# === Core (CPU, 항상 필요) ===
+pyyaml>=6.0
+numpy>=1.26
+opencv-python>=4.9
+pillow>=10.0
+srt>=3.5
+scikit-image>=0.22
+python-dotenv>=1.0
+requests>=2.31
+
+# === OCR (engine/detect.py) — 최소 하나 설치 ===
+#   한국어 소스는 paddleocr 권장(한글 인식 우수, 문서 전처리는 자동 비활성화).
+paddleocr>=3.0          # + paddlepaddle (CPU/GPU). 한국어 기본 백엔드
+rapidocr-onnxruntime>=1.3   # 경량 폴백(한국어 인식 약함 — 영문/숫자 위주)
+# easyocr>=1.7          # 최후 폴백
+
+# === LLM 트랜스크리에이션 (engine/translate.py, src/metadata.py) ===
+anthropic>=0.40
+
+# === 인페인팅 백엔드 (engine/inpaint.py) — GPU(CUDA) 강력 권장 ===
+#   opencv 백엔드는 가중치 없이 동작하는 폴백(품질 낮음, 위 opencv-python로 충분).
+# torch>=2.2            # STTN / LaMa / ProPainter 공통 전제
+# torchvision>=0.17
+# simple-lama-inpainting>=0.1   # LaMa (Apache-2.0) — 상업 사용 가장 안전
+#   STTN:       weights/sttn/       에 가중치 배치 (저장소+가중치 라이선스 확인)
+#   ProPainter: weights/propainter/ 에 가중치 배치
+#               ⚠ S-Lab NON-COMMERCIAL 가능성 — 상업 사용 전 반드시 확인
+
+# === 선택: DeepL 초벌 번역 (engine/translate.py --deepl) ===
+#   TRANSLATE_API_KEY 로 DeepL REST 호출 (requests 사용, 추가 패키지 불필요)
+
+# === 더빙 (src/dub.py, Level C 한정) — 자막 또는 대사 영상 기반 일본어 더빙 ===
+#   기본 백엔드 xtts = 오픈소스 보이스 클로닝(한국어 샘플→일본어 크로스링구얼).
+# faster-whisper>=1.0          # 영상→대사 받아쓰기(ASR, --video 플로우)
+# coqui-tts>=0.27              # XTTS-v2 보이스 클로닝(ja/ko 지원). ⚠ 가중치=Coqui Public License(비상업)
+# torchaudio                   # XTTS 오디오 IO
+# torchcodec                   # torch 2.9+ 오디오 디코딩
+# cutlet  fugashi  unidic-lite # XTTS 일본어 토크나이저(MeCab)
+# elevenlabs>=1.0              # (대안) 상업 라이선스 클로닝 — ELEVENLABS_API_KEY 필요
