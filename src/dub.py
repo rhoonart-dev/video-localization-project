@@ -152,6 +152,29 @@ def _detect_lang(text: str, default: str = "ja") -> str:
     return "en" if ascii_alpha / len(letters) > 0.7 else default
 
 
+# 먹방/ASMR 의성어·감탄(원본 유지 대상). 더빙은 '실제 대사'만(dialogue_only).
+_ONOMATOPOEIA = {"음", "으음", "흠", "아", "어", "오", "와", "우와", "워", "앙", "냠", "냠냠",
+                 "으", "읏", "하", "호", "헉", "캬", "얍", "요", "에", "음냠", "쩝", "후",
+                 "휴", "으하", "으아", "쓰", "짱", "컥", "냥", "자", "야"}
+
+
+def _is_dialogue(text: str) -> bool:
+    """실제 대사 여부(true) vs 씹는소리/감탄(false). ASMR 리액션은 원본 유지하려 걸러냄."""
+    s = re.sub(r"[\s!?.,~…♪♥★\-]+", "", text)
+    if not s:
+        return False
+    if re.fullmatch(r"[A-Za-z' ]+", text) and len(text) <= 12:   # 짧은 영어 추임새
+        return False
+    if re.fullmatch(r"[\d,\s]+", text):                          # 숫자 카운트만
+        return False
+    kor = re.findall(r"[가-힣]", s)
+    if len(kor) <= 2:                                            # 한글 2음절 이하 = 감탄
+        return False
+    if s in _ONOMATOPOEIA or (len(set(kor)) == 1):              # 의성어 / 같은 음절 반복(앙앙앙)
+        return False
+    return True
+
+
 def build_alignment_report(video_id: str, segments: list[dict[str, Any]],
                            voice_id: str) -> dict[str, Any]:
     return {
@@ -297,7 +320,13 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
         voice_id: Optional[str] = None, speaker_wav: Optional[str] = None) -> dict[str, Any]:
     require_level_c(level)
     backend = dub_backend(config)
-    if backend == "xtts":
+    if backend == "gptsovits":
+        # 레퍼런스(루피) 음성으로 크로스링구얼 클로닝 → voice_id/speaker_wav 불필요.
+        gsv = config.get("dub", {}).get("gptsovits", {})
+        if not gsv.get("ref_wav"):
+            raise ValueError("gptsovits 백엔드: config.dub.gptsovits.ref_wav(레퍼런스 음성) 필요")
+        voice_ref = gsv["ref_wav"]
+    elif backend == "xtts":
         speaker_wav = speaker_wav or config.get("dub", {}).get("speaker_wav")
         if not speaker_wav:
             raise ValueError("xtts 백엔드: --speaker(클로닝용 루피 음성 샘플) 또는 config.dub.speaker_wav 필요")
@@ -347,8 +376,10 @@ def transcribe(media: str, config: dict[str, Any], language: str = "ko") -> list
     except ImportError as e:
         raise ImportError("faster-whisper 필요: pip install faster-whisper") from e
     size = config.get("dub", {}).get("asr_model", "base")
+    # 배경음악이 큰 영상은 VAD 가 대사를 통째로 거를 수 있어 config 로 끌 수 있게 함.
+    vad = bool(config.get("dub", {}).get("asr_vad_filter", True))
     model = WhisperModel(size, device="cpu", compute_type="int8")
-    segs, _ = model.transcribe(str(media), language=language, vad_filter=True)
+    segs, _ = model.transcribe(str(media), language=language, vad_filter=vad)
     return [{"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
             for s in segs if s.text.strip()]
 
@@ -359,13 +390,36 @@ def separate_vocals(media: str, out_dir, config: dict[str, Any]) -> Path:
 
     out_dir = ensure_dir(out_dir)
     model = config.get("dub", {}).get("demucs_model", "htdemucs")
+    nov = out_dir / model / Path(media).stem / "no_vocals.wav"
+    if nov.exists():                                   # 이미 분리됨 → 재실행 생략(느린 CPU 절약)
+        return nov
     subprocess.run([sys.executable, "-m", "demucs", "--two-stems", "vocals", "-n", model,
                     "-o", str(out_dir), str(media)],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    nov = out_dir / model / Path(media).stem / "no_vocals.wav"
     if not nov.exists():
         raise RuntimeError(f"Demucs no_vocals 스템 없음: {nov}")
     return nov
+
+
+def _mute_windows(in_path: Path, out_path: Path, windows: list[tuple[float, float]]) -> None:
+    """오디오에서 지정 시간창만 음소거(나머지 원본 유지). dialogue_only 시 대사 구간만 제거."""
+    import subprocess
+
+    if not windows:
+        out_path.write_bytes(Path(in_path).read_bytes())
+        return
+    expr = "+".join(f"between(t,{s:.3f},{e:.3f})" for s, e in windows)   # OR(합>0)
+    subprocess.run(["ffmpeg", "-y", "-i", str(in_path), "-af", f"volume=0:enable='{expr}'",
+                    str(out_path)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _mix_two(a: Path, b: Path, out: Path) -> None:
+    """두 오디오 합성(정규화 없이 합산). 반주(no_vocals) + 리액션(대사 제거 보컬)."""
+    import subprocess
+
+    subprocess.run(["ffmpeg", "-y", "-i", str(a), "-i", str(b), "-filter_complex",
+                    "amix=inputs=2:duration=longest:normalize=0", str(out)],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any],
@@ -383,6 +437,13 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     segs = transcribe(video, config, language=source_lang)
     if not segs:
         raise ValueError("받아쓰기된 대사 없음 — 대사 없는 영상(ASMR 등)일 수 있음. 대사 있는 영상 필요.")
+    if config.get("dub", {}).get("dialogue_only", False):
+        kept = [s for s in segs if _is_dialogue(s["text"])]
+        log.info("dialogue_only: ASR %d개 중 실제 대사 %d개만 더빙(리액션/씹는소리는 원본 유지)",
+                 len(segs), len(kept))
+        segs = kept
+        if not segs:
+            raise ValueError("dialogue_only 필터 결과 대사 0개. asr_model 또는 필터 확인.")
     log.info("ASR 대사 %d개 받아쓰기 완료 → 트랜스크리에이션", len(segs))
 
     entries = transcreate([s["text"] for s in segs], config)   # 한국어→일본어(LLM, persona)
@@ -400,9 +461,20 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
         bg = float(dconf.get("bg_volume", 0.3))
         bg_audio = None
         if dconf.get("remove_original_vocals", False):
-            bg_audio = str(separate_vocals(video, base / "stems", config))  # 원본 목소리 제거
-            bg = max(bg, 0.4)                                                # ASMR/반주 보존
-            log.info("원본 보컬 제거(Demucs) → 반주 스템 믹스")
+            nov = separate_vocals(video, base / "stems", config)            # 반주/효과음 스템
+            if dconf.get("dialogue_only", False):
+                # 대사 구간의 보컬만 제거(일본어 더빙으로 교체) + 리액션/씹는소리는 원본 유지.
+                voc = Path(nov).parent / "vocals.wav"
+                _mute_windows(voc, base / "reactions.wav",
+                              [(s["start"], s["end"]) for s in segs])
+                _mix_two(nov, base / "reactions.wav", base / "bg_reactions_mix.wav")
+                bg_audio = str(base / "bg_reactions_mix.wav")
+                bg = max(bg, 0.85)                                           # 리액션/ASMR 또렷하게
+                log.info("dialogue_only: 대사 구간만 원본 제거, 리액션/씹는소리 보존")
+            else:
+                bg_audio = str(nov)
+                bg = max(bg, 0.4)                                            # ASMR/반주 보존
+                log.info("원본 보컬 제거(Demucs) → 반주 스템 믹스")
         # ASMR 다이내믹 보존: loudnorm 대신 limiter 로 피크만 제한(째짐 방지)
         out = _common.mux_dub(video, res["draft"], base / "final_dubbed.mp4",
                               bg_volume=bg, voice_volume=float(dconf.get("voice_volume", 1.1)),
@@ -411,6 +483,20 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
                               limit=float(dconf.get("peak_limit", 0.97)))
         res["dubbed_video"] = str(out)
         log.info("더빙 영상(초안): %s", out)
+        # 화면에 한국어 자막(번인 텍스트)이 없는 영상 → 더빙된 일본어 오디오에 맞춘
+        # 일본어 자막을 번인(시청자가 대사를 읽을 수 있게). ASR 타이밍 그대로 사용.
+        if dconf.get("burn_dub_subtitle", True):
+            meta = _common.probe(video)
+            ja_ass = base / "ja_dub.ass"
+            ja_ass.write_text(
+                render_mod.build_ass(events, meta["width"], meta["height"],
+                                     int(config.get("render", {}).get("line_max_chars", 26))),
+                encoding="utf-8")
+            subbed = _common.burn_subtitles(
+                str(out), str(ja_ass), base / "final_dubbed_subbed.mp4",
+                fonts_dir=str(resolve_path(config["paths"]["fonts_dir"])))
+            res["dubbed_video_subbed"] = str(subbed)
+            log.info("일본어 더빙 자막 번인: %s", subbed)
     return res
 
 

@@ -58,14 +58,11 @@ def wrap_text(text: str, max_chars: int) -> list[str]:
 
 
 def ass_timestamp(seconds: float) -> str:
-    """초 → ASS 타임코드 H:MM:SS.cs"""
-    seconds = max(0.0, seconds)
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    cs = int(round((seconds - int(seconds)) * 100))
-    if cs == 100:
-        cs, s = 0, s + 1
+    """초 → ASS 타임코드 H:MM:SS.cs (반올림 캐리를 분/시까지 전파)."""
+    cs_total = int(round(max(0.0, seconds) * 100))   # 먼저 센티초로 반올림 후 분해
+    h, rem = divmod(cs_total, 360000)
+    m, rem = divmod(rem, 6000)
+    s, cs = divmod(rem, 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
@@ -168,11 +165,11 @@ def build_srt(events: list[dict[str, Any]], line_max_chars: int = 16) -> str:
 
 
 def _srt_timestamp(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int(round((seconds - int(seconds)) * 1000))
+    """초 → SRT 타임코드 HH:MM:SS,mmm (반올림 캐리를 분/시까지 전파)."""
+    ms_total = int(round(max(0.0, seconds) * 1000))   # 먼저 밀리초로 반올림 후 분해
+    h, rem = divmod(ms_total, 3600000)
+    m, rem = divmod(rem, 60000)
+    s, ms = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 

@@ -84,15 +84,26 @@ class RapidOCRBackend(OCRBackend):
 class PaddleOCRBackend(OCRBackend):
     name = "paddleocr"
 
-    def __init__(self, languages: Optional[list[str]] = None) -> None:
+    def __init__(self, languages: Optional[list[str]] = None,
+                 det_model: Optional[str] = None, rec_model: Optional[str] = None) -> None:
         try:
             from paddleocr import PaddleOCR
         except ImportError as e:
             raise ImportError("paddleocr 필요: pip install paddleocr (+ paddlepaddle)") from e
         lang = "korean" if not languages or "korean" in languages else languages[0]
-        try:   # 3.x: 문서 전처리(방향/언워핑) 끄면 한국어 인식 정확도가 크게 오름
-            self._ocr = PaddleOCR(lang=lang, use_doc_orientation_classify=False,
-                                  use_doc_unwarping=False, use_textline_orientation=False)
+        # 3.x: 문서 전처리(방향/언워핑) 끄면 한국어 인식 정확도가 크게 오름.
+        #      det/rec 모델명 지정 시 CPU 에서 훨씬 빠름(server det 는 1080p 에서 수백초/프레임).
+        #      모델명을 주면 lang 은 무시되므로(rec 모델이 언어 결정) 함께 넘기지 않는다.
+        kw: dict = dict(use_doc_orientation_classify=False, use_doc_unwarping=False,
+                        use_textline_orientation=False)
+        if det_model:
+            kw["text_detection_model_name"] = det_model
+        if rec_model:
+            kw["text_recognition_model_name"] = rec_model
+        if not (det_model or rec_model):
+            kw["lang"] = lang
+        try:
+            self._ocr = PaddleOCR(**kw)
         except (TypeError, ValueError):
             self._ocr = PaddleOCR(lang=lang)   # 구버전 폴백
 
@@ -147,7 +158,8 @@ _BACKENDS = {"rapidocr": RapidOCRBackend, "paddleocr": PaddleOCRBackend, "easyoc
 _FALLBACK_ORDER = ["rapidocr", "paddleocr", "easyocr"]
 
 
-def make_ocr(name: str, languages: Optional[list[str]] = None) -> OCRBackend:
+def make_ocr(name: str, languages: Optional[list[str]] = None,
+             paddle_opts: Optional[dict] = None) -> OCRBackend:
     """이름으로 백엔드 생성. 실패 시 폴백 순서대로 시도."""
     if name not in _BACKENDS:
         raise ValueError(f"알 수 없는 OCR 백엔드: {name} (가능: {list(_BACKENDS)})")
@@ -156,7 +168,12 @@ def make_ocr(name: str, languages: Optional[list[str]] = None) -> OCRBackend:
     for cand in order:
         try:
             cls = _BACKENDS[cand]
-            backend = cls(languages) if cand != "rapidocr" else cls()
+            if cand == "rapidocr":
+                backend = cls()
+            elif cand == "paddleocr":
+                backend = cls(languages, **{k: v for k, v in (paddle_opts or {}).items() if v})
+            else:
+                backend = cls(languages)
             if cand != name:
                 log.warning("OCR 백엔드 '%s' 사용 불가 → '%s' 폴백", name, cand)
             return backend
@@ -198,11 +215,14 @@ def detect(video: str, video_id: str, config: dict[str, Any],
         raise ImportError("opencv 필요: pip install opencv-python") from e
 
     dcfg = config.get("detect", {})
-    sample_every = int(dcfg.get("sample_every", 15))
+    sample_every = max(1, int(dcfg.get("sample_every", 15)))   # 0 이면 idx % sample_every 에서 ZeroDivision
     min_conf = float(dcfg.get("min_confidence", 0.5))
     backend_name = dcfg.get("ocr_backend", "rapidocr")
     languages = dcfg.get("languages", ["korean", "en"])
     roi = roi or (tuple(dcfg["roi"]) if dcfg.get("roi") else None)  # type: ignore[assignment]
+    ocr_downscale_w = int(dcfg.get("ocr_downscale_width", 0))       # OCR 입력 가로 폭(0=원본)
+    paddle_opts = {"det_model": dcfg.get("paddle_det_model"),
+                   "rec_model": dcfg.get("paddle_rec_model")}
 
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
@@ -211,7 +231,7 @@ def detect(video: str, video_id: str, config: dict[str, Any],
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    ocr = make_ocr(backend_name, languages)
+    ocr = make_ocr(backend_name, languages, paddle_opts=paddle_opts)
     warn = korean_ocr_warning(ocr.name, languages)
     if warn:
         log.warning(warn)
@@ -225,7 +245,8 @@ def detect(video: str, video_id: str, config: dict[str, Any],
         if not ok:
             break
         if idx % sample_every == 0:
-            fd = _detect_frame(ocr, frame, idx, idx / fps, width, height, roi, min_conf)
+            fd = _detect_frame(ocr, frame, idx, idx / fps, width, height, roi, min_conf,
+                               ocr_downscale_w)
             if fd.regions:
                 frames.append(fd)
         idx += 1
@@ -244,21 +265,40 @@ def detect(video: str, video_id: str, config: dict[str, Any],
     return doc
 
 
+def _ocr_scaled(ocr: OCRBackend, img, downscale_w: int):
+    """OCR 입력을 가로 downscale_w 로 축소해 인식(속도↑) → bbox 는 원본 좌표로 환원.
+
+    반환: [(bbox_원본좌표, text, conf), ...]. downscale_w<=0 또는 이미 작으면 원본 그대로.
+    """
+    h, w = img.shape[:2]
+    if downscale_w <= 0 or w <= downscale_w:
+        return ocr.recognize(img)
+    import cv2
+
+    scale = downscale_w / w
+    small = cv2.resize(img, (downscale_w, max(1, int(round(h * scale)))))
+    out = []
+    for bbox, text, conf in ocr.recognize(small):
+        bx = tuple(int(round(c / scale)) for c in bbox)  # 원본 해상도로 환원
+        out.append((bx, text, conf))
+    return out
+
+
 def _detect_frame(ocr: OCRBackend, frame, idx: int, ts: float, width: int, height: int,
-                  roi: Optional[BBox], min_conf: float) -> FrameDetections:
+                  roi: Optional[BBox], min_conf: float, downscale_w: int = 0) -> FrameDetections:
     regions: list[Region] = []
     if roi:
         x1, y1, x2, y2 = clamp_bbox(roi, width, height)
         crop = frame[y1:y2, x1:x2]
         text, conf = "", 0.0
-        for (_, t, c) in ocr.recognize(crop):
+        for (_, t, c) in _ocr_scaled(ocr, crop, downscale_w):
             if c >= conf:
                 text, conf = t, c
         regions.append(Region(bbox=(x1, y1, x2, y2), text=text, confidence=conf,
                               style=estimate_style(frame, (x1, y1, x2, y2), width, height),
                               flagged=conf < min_conf))  # ROI 는 항상 마스킹 대상
     else:
-        for bbox, text, conf in ocr.recognize(frame):
+        for bbox, text, conf in _ocr_scaled(ocr, frame, downscale_w):
             bbox = clamp_bbox(bbox, width, height)
             regions.append(Region(bbox=bbox, text=text, confidence=conf,
                                   style=estimate_style(frame, bbox, width, height),

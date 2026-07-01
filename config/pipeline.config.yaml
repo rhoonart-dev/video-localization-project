@@ -42,6 +42,10 @@ detect:
   min_confidence: 0.5              # 이하 confidence 는 flagged=true
   merge_iou: 0.6                   # 인접 프레임 동일 영역 병합 IoU 임계
   roi: null                        # [x1,y1,x2,y2] 주면 OCR 대신 고정 ROI 사용
+  # paddleocr 3.x 성능(CPU): server det 는 1080p 에서 수백초/프레임 → mobile 권장.
+  paddle_det_model: PP-OCRv5_mobile_det
+  paddle_rec_model: korean_PP-OCRv5_mobile_rec
+  ocr_downscale_width: 960         # OCR 입력 가로 폭(0=원본). 축소해도 bbox 는 원본좌표로 환원
 
 mask:
   dilate_px: 8                     # bbox 팽창(잔여 글자 테두리 제거)
@@ -60,10 +64,10 @@ inpaint:
   propainter_commercial_ack: false # true 로 명시 안 하면 propainter 차단(라이선스 가드)
 
 translate:
-  provider: anthropic
-  model: claude-sonnet-4-6         # 대량 트랜스크리에이션 기본(품질·비용 균형)
-  hero_model: claude-opus-4-8      # hero 영상 등 고품질 필요 시
-  max_tokens: 1024
+  provider: gemini                 # gemini | anthropic (engine/llm.py 가 분기)
+  model: gemini-3.5-flash          # 대량 트랜스크리에이션 기본(최신 GA flash, thinking off)
+  hero_model: gemini-pro-latest    # hero 영상 등 고품질(최신 pro 추적, thinking 모드)
+  max_tokens: 8192                 # source/target/notes/flagged × 항목수 → 넉넉히(잘림 방지)
   use_deepl_draft: false           # true 면 DeepL 초벌 병용(TRANSLATE_API_KEY 필요)
   deepl_endpoint: https://api-free.deepl.com/v2/translate
 
@@ -94,8 +98,11 @@ upload:
 dub:                               # Level C 한정. 게이트 통과 후에만.
   tts_backend: gptsovits           # gptsovits(루피 음색 크로스링구얼 클로닝, 권장) | xtts | elevenlabs
   language: ja                     # 기본 합성 언어(세그별 영어 대사는 자동 감지해 en 유지)
+  asr_vad_filter: true             # ASR VAD(배경음악 큰 영상은 false 로 꺼야 대사 잡힘)
+  burn_dub_subtitle: true          # 화면 한국어 자막 없을 때: 더빙 일본어 오디오 자막 번인
+  dialogue_only: false             # true=실제 대사만 더빙, 씹는소리/감탄(리액션)은 원본 유지(ASMR용)
   speaker_wav: null                # xtts 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로
-  asr_model: small                 # faster-whisper 모델(영상→더빙 받아쓰기): base|small|medium
+  asr_model: medium                # faster-whisper(영상→더빙 받아쓰기): base|small|medium (medium=인트로 등 누락↓)
   bg_volume: 0.4                   # 더빙 믹스 시 배경 볼륨(ASMR 보존 ↑, 완전대체 0)
   voice_volume: 1.1                # 더빙 보이스 볼륨(limiter 가 피크 제한)
   fit_to_timing: true              # 합성 음성을 자막 슬롯 길이에 맞게 time-stretch(싱크)
@@ -111,19 +118,13 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
     model_dir: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained
     gpt_ckpt: s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
     sovits_ckpt: s2G2333k.pth
-    ref_wav: outputs/GPT-SoVITS/loopy_clips10/c5.wav   # 메인 레퍼런스(전사 보유 구간)
-    prompt_text: 마라엽떡 엽기닭발 로제마라샹궈 크림새우 그리고 치킨까지 준비해보았습니다
+    ref_wav: outputs/loopy_mukbang/ref/main.wav   # 루피 레퍼런스(먹방 인트로, 보컬분리)
+    prompt_text: 이제 마라샹궈 크림새우 그리고 치킨까지 준비해보았습니다 그럼 맛있게 잘 먹겠습니다
     prompt_lang: ko                # 레퍼런스(루피) 음성 언어
-    aux_refs:                      # 멀티레퍼런스 음색 보강(여러 클립 → 안정/유사도 ↑)
-      - outputs/GPT-SoVITS/loopy_clips10/c0.wav
-      - outputs/GPT-SoVITS/loopy_clips10/c1.wav
-      - outputs/GPT-SoVITS/loopy_clips10/c2.wav
-      - outputs/GPT-SoVITS/loopy_clips10/c3.wav
-      - outputs/GPT-SoVITS/loopy_clips10/c4.wav
-      - outputs/GPT-SoVITS/loopy_clips10/c6.wav
-      - outputs/GPT-SoVITS/loopy_clips10/c7.wav
-      - outputs/GPT-SoVITS/loopy_clips10/c8.wav
-      - outputs/GPT-SoVITS/loopy_clips10/c9.wav
+    aux_refs:                      # 멀티레퍼런스(동일 화자 클립 → 음색 안정/유사도↑)
+      - outputs/loopy_mukbang/ref/aux1.wav
+      - outputs/loopy_mukbang/ref/aux2.wav
+      - outputs/loopy_mukbang/ref/aux3.wav
     top_k: 20
     top_p: 0.6
     temperature: 0.6

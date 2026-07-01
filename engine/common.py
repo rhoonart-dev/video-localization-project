@@ -166,12 +166,16 @@ def probe(video: str | os.PathLike) -> dict[str, Any]:
         return (float(num) / den_f) if den_f else 0.0
 
     nb = vstream.get("nb_frames")
+    try:   # ffprobe 가 duration 을 "N/A" 로 줄 수 있어 falsy 가드만으론 부족
+        duration = float(info.get("format", {}).get("duration", 0.0))
+    except (TypeError, ValueError):
+        duration = 0.0
     return {
         "width": int(vstream.get("width", 0)),
         "height": int(vstream.get("height", 0)),
         "fps": round(_fps(vstream), 6),
         "nb_frames": int(nb) if nb and str(nb).isdigit() else None,
-        "duration": float(info.get("format", {}).get("duration", 0.0) or 0.0),
+        "duration": duration,
         "has_audio": any(s.get("codec_type") == "audio" for s in info.get("streams", [])),
     }
 
