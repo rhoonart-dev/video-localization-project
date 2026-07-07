@@ -50,8 +50,9 @@ def device_flow(client_id: str, client_secret: str) -> dict:
     d = _post("https://oauth2.googleapis.com/device/code",
               {"client_id": client_id, "scope": SCOPE})
     if "verification_url" not in d:
-        raise SystemExit(f"디바이스 코드 발급 실패: {d} — OAuth 클라이언트 유형이 "
-                         f"'TV 및 제한된 입력 장치'인지 확인")
+        if d.get("error") == "invalid_client":      # 데스크톱 앱 유형 → loopback 폴백
+            return None
+        raise SystemExit(f"디바이스 코드 발급 실패: {d}")
     print(f"\n▶ 브라우저에서 열기: {d['verification_url']}")
     print(f"▶ 코드 입력: {d['user_code']}")
     print("  (⚠ 본채널 말고 테스트 채널 계정으로 로그인 권장)\n대기 중...")
@@ -65,6 +66,54 @@ def device_flow(client_id: str, client_secret: str) -> dict:
             return tok
         if tok.get("error") not in ("authorization_pending", "slow_down"):
             raise SystemExit(f"인증 실패: {tok}")
+
+
+def loopback_flow(client_id: str, client_secret: str) -> dict:
+    """데스크톱 앱 유형용 — localhost 리디렉트로 인증 코드 수신."""
+    import http.server
+    import secrets
+    import socket
+    import subprocess as sp
+
+    with socket.socket() as s:                      # 빈 포트 확보
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    redirect = f"http://127.0.0.1:{port}"
+    state = secrets.token_urlsafe(16)
+    auth_url = ("https://accounts.google.com/o/oauth2/v2/auth?"
+                + urllib.parse.urlencode({"client_id": client_id, "redirect_uri": redirect,
+                                          "response_type": "code", "scope": SCOPE,
+                                          "access_type": "offline", "prompt": "consent",
+                                          "state": state}))
+    print(f"\n▶ 브라우저에서 인증(자동으로 열림): {auth_url[:80]}...")
+    print("  (⚠ 본채널 말고 테스트 채널 계정 선택 권장)\n대기 중...")
+    sp.run(["open", auth_url], check=False)         # macOS 기본 브라우저
+
+    code_holder: dict = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):                            # noqa: N802
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if q.get("state", [""])[0] == state and "code" in q:
+                code_holder["code"] = q["code"][0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("<h2>인증 완료 — 이 창은 닫아도 됩니다.</h2>".encode())
+
+        def log_message(self, *a):                   # 조용히
+            pass
+
+    with http.server.HTTPServer(("127.0.0.1", port), H) as srv:
+        while "code" not in code_holder:
+            srv.handle_request()
+    tok = _post("https://oauth2.googleapis.com/token",
+                {"client_id": client_id, "client_secret": client_secret,
+                 "code": code_holder["code"], "redirect_uri": redirect,
+                 "grant_type": "authorization_code"})
+    if "access_token" not in tok:
+        raise SystemExit(f"토큰 교환 실패: {tok}")
+    return tok
 
 
 def get_token() -> str:
@@ -89,6 +138,9 @@ def get_token() -> str:
             return tok["access_token"]
         print("리프레시 실패 → 재인증")
     tok = device_flow(cid, csec)
+    if tok is None:                                  # 데스크톱 앱 유형 → loopback
+        print("클라이언트 유형: 데스크톱 앱 → localhost 리디렉트 방식 사용")
+        tok = loopback_flow(cid, csec)
     ensure_dir(TOKEN_CACHE.parent)
     TOKEN_CACHE.write_text(json.dumps({"refresh_token": tok["refresh_token"]}))
     return tok["access_token"]
