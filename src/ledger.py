@@ -26,6 +26,21 @@ log = get_logger("ledger")
 STATES = ("discovered", "scored", "selected", "processing", "qa_passed",
           "pending_approval", "approved", "uploaded", "failed", "skipped")
 
+# 허용 전이 — 역행(uploaded→selected 등)을 막아 중복 처리·중복 업로드를 원장 차원에서 차단.
+# 예외 상황은 set_state(force=True) 로만(감사 추적을 위해 notes 권장).
+TRANSITIONS: dict[str, set[str]] = {
+    "discovered": {"scored", "selected", "skipped", "failed"},
+    "scored": {"selected", "skipped", "discovered", "failed"},   # →discovered = 재스코어
+    "selected": {"processing", "skipped", "discovered", "failed"},
+    "processing": {"qa_passed", "failed"},
+    "qa_passed": {"pending_approval", "failed"},
+    "pending_approval": {"approved", "skipped", "failed"},
+    "approved": {"uploaded", "failed"},
+    "uploaded": set(),                                           # 종착 — 되돌림은 force 만
+    "failed": {"discovered", "selected", "processing"},          # 재시도 경로
+    "skipped": {"discovered", "selected"},                       # 사람이 번복 가능
+}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
     video_id      TEXT PRIMARY KEY,
@@ -110,27 +125,36 @@ def get_by_state(conn: sqlite3.Connection, state: str,
 
 
 def set_state(conn: sqlite3.Connection, video_id: str, state: str,
-              notes: Optional[str] = None) -> None:
+              notes: Optional[str] = None, force: bool = False) -> None:
     if state not in STATES:
         raise ValueError(f"알 수 없는 상태: {state} ({'/'.join(STATES)})")
-    cur = conn.execute(
+    row = conn.execute("SELECT state FROM videos WHERE video_id=?", (video_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"원장에 없는 video_id: {video_id}")
+    current = row["state"]
+    if not force and state != current and state not in TRANSITIONS.get(current, set()):
+        raise ValueError(
+            f"허용되지 않는 전이: {current} → {state} (video {video_id}). "
+            f"허용: {sorted(TRANSITIONS.get(current, set())) or '없음(종착)'} — 예외는 force=True")
+    conn.execute(
         "UPDATE videos SET state=?, notes=COALESCE(?, notes), updated_at=? WHERE video_id=?",
         (state, notes, _now(), video_id))
-    if cur.rowcount == 0:
-        raise KeyError(f"원장에 없는 video_id: {video_id}")
     conn.commit()
 
 
 def record_score(conn: sqlite3.Connection, video_id: str, total: float,
                  scores: dict[str, Any], level_guess: Optional[str] = None) -> None:
-    """스코어링 결과 기록 + 상태 scored 전이."""
+    """스코어링 결과 기록 + 상태 scored 전이 (discovered/scored 에서만 가능)."""
     cur = conn.execute(
         """UPDATE videos SET score=?, scores=?, level_guess=?, state='scored', updated_at=?
-           WHERE video_id=?""",
+           WHERE video_id=? AND state IN ('discovered','scored')""",
         (round(float(total), 6), json.dumps(scores, ensure_ascii=False),
          level_guess, _now(), video_id))
     if cur.rowcount == 0:
-        raise KeyError(f"원장에 없는 video_id: {video_id}")
+        row = conn.execute("SELECT state FROM videos WHERE video_id=?", (video_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"원장에 없는 video_id: {video_id}")
+        raise ValueError(f"스코어 기록 불가: {video_id} 는 {row['state']} 상태(처리 진행 중 보호)")
     conn.commit()
 
 

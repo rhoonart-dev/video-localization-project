@@ -23,7 +23,13 @@ python -m src.autopilot score --limit 30    # 발견분 스코어링(공개지�
 python -m src.autopilot report --top 10     # outputs/autopilot_report.md (+csv)
 python -m src.autopilot status              # 상태별 집계
 python -m src.autopilot mark <id> --state selected   # 처리 시작 결정(사람)
+python -m src.autopilot rescore [id]        # scored → discovered 재채점(전량 스캔 후 권장)
 ```
+
+운영 순서 권장: **전량 `scan` 완료 후 `score`** — 점수의 조회수 성분이 원장 내 상대값이라,
+스캔 도중 채점하면 정규화 기준이 흔들린다(흔들렸으면 `rescore` 후 재채점).
+LLM 전면 장애·YouTube 쿼터 소진 시 실행이 스스로 중단되고 남은 건 discovered 로 남는다
+(`require_llm: false` 로 정량만 채점 가능하나 비권장).
 
 설정: `config/pipeline.config.yaml` 의 `autopilot:` 섹션(채널·가중치·비용 가드).
 

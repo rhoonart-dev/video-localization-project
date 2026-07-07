@@ -67,3 +67,12 @@ def test_llm_component_formula():
     assert llm_component({"jp_fit": 0, "language_dependence": 10}) == 0.0
     assert llm_component({"jp_fit": 5, "language_dependence": 5}) == 0.5
     assert llm_component({}) is None               # LLM 실패 → 신호 없음
+
+
+def test_llm_component_schema_violation_is_signal_missing_not_crash():
+    # LLM 이 null/문자열을 내도 배치가 죽지 않고 신호 없음(None) 처리 — 모듈 계약.
+    from src.jp_score import llm_component
+    assert llm_component({"jp_fit": None}) is None
+    assert llm_component({"jp_fit": "high"}) is None
+    assert llm_component({"jp_fit": 8, "language_dependence": None}) == 0.65  # dep=5 폴백
+    assert llm_component({"jp_fit": 8, "language_dependence": "낮음"}) is None

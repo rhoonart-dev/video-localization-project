@@ -1,5 +1,12 @@
 """src/autopilot.py — 신호 조립·리포트 생성 순수 로직 (네트워크/LLM 없음)."""
-from src.autopilot import build_report_md, build_signals
+from src.autopilot import build_report_md, build_signals, valid_level
+
+
+def test_valid_level_rejects_llm_schema_violations():
+    assert valid_level("A") == "A" and valid_level("C") == "C"
+    assert valid_level("D") is None                # config.levels 에 없는 값
+    assert valid_level(None) is None
+    assert valid_level("자막") is None
 
 CFG = {"autopilot": {"weights": {"views": 0.2, "like_ratio": 0.15,
                                  "jp_comments": 0.35, "llm_jp_fit": 0.3}}}

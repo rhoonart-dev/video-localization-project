@@ -73,6 +73,39 @@ def test_record_score_and_top_scored_order():
         assert '"views"' in top[0]["scores"]      # 세부 점수 JSON 보존
 
 
+def test_transition_rules_block_regressions():
+    # 역행(uploaded→selected)은 원장이 차단 — Phase 2 중복 업로드 방지의 근간.
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = _conn(tmp)
+        ledger.upsert_discovered(conn, ROWS)
+        for s in ("scored", "selected", "processing", "qa_passed",
+                  "pending_approval", "approved", "uploaded"):
+            ledger.set_state(conn, "v1", s)        # 정방향 전이는 순서대로 허용
+        try:
+            ledger.set_state(conn, "v1", "selected")
+            assert False, "uploaded → selected 역행을 거부해야 함"
+        except ValueError:
+            pass
+        ledger.set_state(conn, "v1", "discovered", force=True)   # 예외는 force 로만
+        assert "v1" in [r["video_id"] for r in ledger.get_by_state(conn, "discovered")]
+
+
+def test_rescore_transition_and_record_score_guard():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = _conn(tmp)
+        ledger.upsert_discovered(conn, ROWS)
+        ledger.record_score(conn, "v1", 0.5, {"views": 0.5})
+        ledger.set_state(conn, "v1", "discovered")               # scored→discovered = 재스코어 허용
+        ledger.record_score(conn, "v1", 0.7, {"views": 0.7})     # 재채점 가능
+        ledger.set_state(conn, "v1", "selected")
+        ledger.set_state(conn, "v1", "processing")
+        try:
+            ledger.record_score(conn, "v1", 0.1, {})
+            assert False, "processing 중 스코어 덮어쓰기를 거부해야 함"
+        except ValueError:
+            pass
+
+
 def test_get_by_state_and_counts():
     with tempfile.TemporaryDirectory() as tmp:
         conn = _conn(tmp)

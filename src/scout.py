@@ -17,6 +17,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -29,17 +30,22 @@ from engine.common import get_logger, get_secret  # noqa: E402
 log = get_logger("scout")
 
 _API_BASE = "https://www.googleapis.com/youtube/v3"
-_DUR_RE = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
+# 일(D) 포함 — 라이브 'P0D'(→0.0), 24h+ 'P1DT2H3M4S' 도 파싱해 길이 필터가 걸러낸다.
+_DUR_RE = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
+
+
+class QuotaExceeded(RuntimeError):
+    """YouTube API 일일 쿼터 소진 — 재시도 가능한 일시 장애(신호 부재와 구분)."""
 
 
 # ── 순수 헬퍼 ─────────────────────────────────────────────────────────────
 def parse_iso8601_duration(s: str) -> Optional[float]:
-    """'PT1M3S' → 63.0 (videos.list contentDetails.duration)."""
+    """'PT1M3S' → 63.0, 'P0D' → 0.0 (videos.list contentDetails.duration)."""
     m = _DUR_RE.match(s or "")
-    if not m or not any(m.groups()):
+    if not m or all(g is None for g in m.groups()):
         return None
-    h, mi, sec = (int(g) if g else 0 for g in m.groups())
-    return float(h * 3600 + mi * 60 + sec)
+    d, h, mi, sec = (int(g) if g else 0 for g in m.groups())
+    return float(d * 86400 + h * 3600 + mi * 60 + sec)
 
 
 def shorts_playlist_id(channel_id: str) -> str:
@@ -51,10 +57,14 @@ def shorts_playlist_id(channel_id: str) -> str:
     return "UUSH" + channel_id[2:]
 
 
-def within_duration(duration: Optional[float], min_s: float, max_s: float) -> bool:
-    """Shorts 길이 필터. 길이 미상(ytdlp flat)은 통과시키고 후단에서 재확인."""
+def within_duration(duration: Optional[float], min_s: float, max_s: float,
+                    allow_unknown: bool = True) -> bool:
+    """Shorts 길이 필터.
+
+    길이 미상(None)은 ytdlp flat(원래 길이를 안 줌)에선 통과(allow_unknown=True),
+    API 백엔드(길이가 반드시 와야 함)에선 파싱 실패 = 제외(fail-closed)."""
     if duration is None:
-        return True
+        return allow_unknown
     return min_s <= duration <= max_s
 
 
@@ -132,14 +142,27 @@ def _videos_stats(video_ids: list[str], api_key: str) -> list[dict[str, Any]]:
 
 
 def fetch_comment_texts(video_id: str, api_key: str, sample: int = 100) -> Optional[list[str]]:
-    """댓글 텍스트 표본(언어 분석용). 댓글 비활성(403)·오류 시 None — 신호 없음."""
+    """댓글 텍스트 표본(언어 분석용).
+
+    댓글 비활성 등 '신호 자체가 없는' 경우 → None. 쿼터 소진(quotaExceeded)은
+    재시도 가능한 일시 장애라 QuotaExceeded 로 구분해 올린다(호출자가 실행 중단)."""
     try:
         data = _api_get("commentThreads", {"part": "snippet", "videoId": video_id,
                                            "maxResults": min(sample, 100),
                                            "textFormat": "plainText"}, api_key)
         return [it["snippet"]["topLevelComment"]["snippet"].get("textOriginal", "")
                 for it in data.get("items", [])]
-    except Exception as e:                                    # commentsDisabled 등
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        if e.code == 403 and "quotaExceeded" in body:
+            raise QuotaExceeded(f"YouTube API 쿼터 소진 (video {video_id})") from e
+        log.info("댓글 수집 불가(%s): HTTP %s", video_id, e.code)   # commentsDisabled 등
+        return None
+    except Exception as e:
         log.info("댓글 수집 불가(%s): %s", video_id, e)
         return None
 
@@ -184,6 +207,8 @@ def scout(config: dict[str, Any]) -> list[dict[str, Any]]:
         rows = _scout_ytdlp(handle, max_scan)
 
     lo, hi = float(ap.get("min_duration", 3)), float(ap.get("max_duration", 183))
-    kept = [r for r in rows if within_duration(r.get("duration"), lo, hi)]
+    # API 는 길이가 반드시 와야 정상 → 파싱 실패는 제외(fail-closed). ytdlp flat 은 원래 미상 → 통과.
+    kept = [r for r in rows
+            if within_duration(r.get("duration"), lo, hi, allow_unknown=(backend != "api"))]
     log.info("스카우트 완료(backend=%s): %d편 (길이 필터 후 %d)", backend, len(rows), len(kept))
     return kept

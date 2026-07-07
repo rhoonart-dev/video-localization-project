@@ -9,6 +9,7 @@ Phase 1 범위: 스카우트(scan) → 스코어링(score) → 후보 리포트(
   python -m src.autopilot report [--top 10]  # 후보 TOP N 리포트(md+csv)
   python -m src.autopilot status             # 상태별 집계
   python -m src.autopilot mark <id> --state selected|skipped   # 사람 결정 기록
+  python -m src.autopilot rescore [id]        # scored → discovered (재채점)
 """
 from __future__ import annotations
 
@@ -40,6 +41,11 @@ def build_signals(row: dict[str, Any], jp_comment_ratio: Optional[float],
         "jp_comments": jp_comment_ratio,
         "llm_jp_fit": jp_score.llm_component(llm_item),
     }
+
+
+def valid_level(level: Any) -> Optional[str]:
+    """LLM level_guess 검증 — A|B|C 외(null·'D'·문자열)는 None(미상)."""
+    return level if level in ("A", "B", "C") else None
 
 
 def _esc(s: Any) -> str:
@@ -103,22 +109,35 @@ def cmd_score(config: dict[str, Any], limit: Optional[int] = None) -> int:
         max_views = float(row["m"] or 0)
 
         llm_map = jp_score.llm_score_batch(todo, config)
+        if not llm_map and ap.get("require_llm", True):
+            # LLM 전면 장애(키 미설정·429 등)로 정량 신호만 채점되면 열화 점수가
+            # scored 로 고착된다 → 이번 실행은 중단하고 discovered 로 남겨 재시도.
+            log.warning("LLM 스코어링 전면 실패 → 실행 중단(%d편 discovered 유지). "
+                        "정량 신호만으로 채점하려면 config autopilot.require_llm=false", len(todo))
+            return 0
         weights = ap.get("weights", {})
         sample = int(ap.get("comment_sample", 100))
+        done = 0
         for r in todo:
             vid = r["video_id"]
             jp_ratio = None
             if api_key and (r.get("comment_count") or 0) > 0:
-                texts = scout.fetch_comment_texts(vid, api_key, sample)
+                try:
+                    texts = scout.fetch_comment_texts(vid, api_key, sample)
+                except scout.QuotaExceeded as e:
+                    log.warning("%s → 실행 중단(잔여 %d편은 다음 실행에서 재시도)",
+                                e, len(todo) - done)
+                    break
                 jp_ratio = jp_score.kana_ratio(texts) if texts is not None else None
             llm_item = llm_map.get(vid, {})
             signals = build_signals(r, jp_ratio, llm_item, max_views)
             total = jp_score.combine_scores(signals, weights)
             detail = {**signals, "llm_reason": llm_item.get("reason", "")}
             ledger.record_score(conn, vid, total, detail,
-                                level_guess=llm_item.get("level_guess"))
-        log.info("score 완료: %d편 (LLM 응답 %d)", len(todo), len(llm_map))
-        return len(todo)
+                                level_guess=valid_level(llm_item.get("level_guess")))
+            done += 1
+        log.info("score 완료: %d편 (LLM 응답 %d)", done, len(llm_map))
+        return done
     finally:
         conn.close()
 
@@ -166,10 +185,25 @@ def cmd_mark(config: dict[str, Any], video_id: str, state: str,
         raise SystemExit("mark 는 selected|skipped 만 허용 (그 외 상태는 파이프라인이 관리)")
     conn = ledger.connect(config=config)
     try:
-        ledger.set_state(conn, video_id, state, notes=notes)
+        ledger.set_state(conn, video_id, state, notes=notes)   # 전이 규칙은 원장이 검증
     finally:
         conn.close()
     log.info("mark: %s → %s", video_id, state)
+
+
+def cmd_rescore(config: dict[str, Any], video_id: Optional[str] = None) -> int:
+    """scored → discovered 리셋(재스코어). 전량 재스캔 후 정규화 기준이 바뀌었거나
+    LLM 부분 장애로 열화 채점된 배치를 다음 score 실행에서 다시 채점하게 한다."""
+    conn = ledger.connect(config=config)
+    try:
+        targets = ([{"video_id": video_id}] if video_id
+                   else ledger.get_by_state(conn, "scored"))
+        for r in targets:
+            ledger.set_state(conn, r["video_id"], "discovered", notes="rescore")
+    finally:
+        conn.close()
+    log.info("rescore: %d편 → discovered (다음 score 에서 재채점)", len(targets))
+    return len(targets)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────
@@ -187,6 +221,8 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     pm.add_argument("video_id")
     pm.add_argument("--state", required=True, choices=["selected", "skipped"])
     pm.add_argument("--notes", default=None)
+    pc = sub.add_parser("rescore")
+    pc.add_argument("video_id", nargs="?", default=None)
     return p.parse_args(argv)
 
 
@@ -203,6 +239,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_status(config)
     elif args.cmd == "mark":
         cmd_mark(config, args.video_id, args.state, args.notes)
+    elif args.cmd == "rescore":
+        cmd_rescore(config, args.video_id)
 
 
 if __name__ == "__main__":

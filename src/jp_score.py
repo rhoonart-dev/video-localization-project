@@ -66,11 +66,17 @@ def combine_scores(signals: dict[str, Optional[float]], weights: dict[str, float
 
 
 def llm_component(item: dict[str, Any]) -> Optional[float]:
-    """LLM 세부점수 → 0~1 성분. jp_fit 높을수록·언어 의존 낮을수록 좋음."""
+    """LLM 세부점수 → 0~1 성분. jp_fit 높을수록·언어 의존 낮을수록 좋음.
+
+    LLM 이 null/문자열 등 스키마 이탈 값을 내면 None(신호 없음) — 배치를 죽이지 않는다."""
     if "jp_fit" not in item:
         return None
-    fit = max(0.0, min(10.0, float(item.get("jp_fit", 0))))
-    dep = max(0.0, min(10.0, float(item.get("language_dependence", 5))))
+    try:
+        fit = max(0.0, min(10.0, float(item["jp_fit"])))
+        dep_raw = item.get("language_dependence")
+        dep = max(0.0, min(10.0, float(5 if dep_raw is None else dep_raw)))
+    except (TypeError, ValueError):
+        return None
     return round((fit + (10.0 - dep)) / 20.0, 4)
 
 

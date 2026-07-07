@@ -8,6 +8,8 @@ def test_parse_iso8601_duration():
     assert parse_iso8601_duration("PT1M3S") == 63.0
     assert parse_iso8601_duration("PT2M") == 120.0
     assert parse_iso8601_duration("PT1H2M3S") == 3723.0
+    assert parse_iso8601_duration("P0D") == 0.0                # 라이브/예정 → 0 → 길이필터 제외
+    assert parse_iso8601_duration("P1DT2H3M4S") == 93784.0     # 24h+ 영상
     assert parse_iso8601_duration("") is None
     assert parse_iso8601_duration("garbage") is None
 
@@ -41,4 +43,6 @@ def test_within_duration():
     assert within_duration(30.0, 3, 183)
     assert not within_duration(2.0, 3, 183)        # 너무 짧음(인트로 조각 등)
     assert not within_duration(200.0, 3, 183)      # 3분 초과 → Shorts 아님
-    assert within_duration(None, 3, 183)           # 길이 미상(ytdlp flat)은 통과
+    assert not within_duration(0.0, 3, 183)        # P0D 라이브 → 제외
+    assert within_duration(None, 3, 183)                        # ytdlp flat: 미상 통과
+    assert not within_duration(None, 3, 183, allow_unknown=False)  # API: 미상 제외(fail-closed)
