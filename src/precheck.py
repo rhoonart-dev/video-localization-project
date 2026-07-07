@@ -111,16 +111,14 @@ def _ocr_probe(video: str, config: dict[str, Any]) -> tuple[list[dict[str, Any]]
 
 
 def _asr_probe(video: str, config: dict[str, Any]) -> int:
-    """한국어 대사 세그먼트 수(한글 2자 이상만 인정 — 음악·효과음 오인 방지).
+    """한국어 대사 세그먼트 수(한글 2자 이상 + 할루시네이션 필터).
 
-    모델은 실제 더빙 플로우(dub.asr_model)와 동일하게 — 판정과 실행의 기준 일치."""
-    from faster_whisper import WhisperModel
+    판정과 실행의 기준 일치: 모델·필터를 실제 더빙 플로우(src/dub.transcribe)와 공유 —
+    여기서 대사로 세면 더빙도 그 대사를 쓴다."""
+    from src.dub import transcribe
 
-    size = config.get("dub", {}).get("asr_model", "small")
-    model = WhisperModel(size, device="cpu", compute_type="int8")
-    vad = bool(config.get("dub", {}).get("asr_vad_filter", True))
-    segs, _ = model.transcribe(video, language="ko", vad_filter=vad)
-    return sum(1 for s in segs if hangul_chars(s.text) >= 2)
+    segs = transcribe(video, config, language="ko")
+    return sum(1 for s in segs if hangul_chars(s["text"]) >= 2)
 
 
 def precheck(video: str, video_id: str, config: dict[str, Any]) -> dict[str, Any]:

@@ -186,3 +186,12 @@ def test_dub_backend_gptsovits():
 
 def test_segment_ext_gptsovits_is_wav():
     assert segment_ext({"dub": {"tts_backend": "gptsovits"}}) == ".wav"
+
+
+def test_reliable_segment_filters_hallucination():
+    from src.dub import reliable_segment
+    # 실측(아기루피 Short): no_speech 0.75 + '유료 광고 포함' 지어냄 → 제외돼야 함
+    assert not reliable_segment(0.75, -0.92)
+    assert reliable_segment(0.10, -0.30)            # 또렷한 실제 대사
+    assert not reliable_segment(0.10, -1.5)         # 확신 없는 웅얼거림
+    assert reliable_segment(0.5, -1.2)              # 경계값 포함

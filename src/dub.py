@@ -369,19 +369,40 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
 
 
 # ── 영상→더빙 (ASR → 번역 → 합성 → 믹스) ─────────────────────────────────
+def reliable_segment(no_speech_prob: float, avg_logprob: float,
+                     max_no_speech: float = 0.5, min_logprob: float = -1.2) -> bool:
+    """Whisper 할루시네이션 필터 — 음악/효과음에서 '유료 광고 포함' 류 문구를 지어내는
+    세그먼트를 거른다(실측: 아기루피 Short, no_speech 0.75 로 광고 고지문 생성).
+    no_speech_prob 높음 = 모델 스스로 '말 아님' / avg_logprob 매우 낮음 = 확신 없음."""
+    return no_speech_prob <= max_no_speech and avg_logprob >= min_logprob
+
+
 def transcribe(media: str, config: dict[str, Any], language: str = "ko") -> list[dict[str, Any]]:
-    """faster-whisper 로 음성 받아쓰기 → [{start,end,text}] (대사 없는 영상이면 빈 리스트)."""
+    """faster-whisper 로 음성 받아쓰기 → [{start,end,text}] (대사 없는 영상이면 빈 리스트).
+
+    할루시네이션 세그먼트(reliable_segment 참고)는 제외 — 없는 대사를 더빙하지 않는다."""
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:
         raise ImportError("faster-whisper 필요: pip install faster-whisper") from e
-    size = config.get("dub", {}).get("asr_model", "base")
+    dconf = config.get("dub", {})
+    size = dconf.get("asr_model", "base")
     # 배경음악이 큰 영상은 VAD 가 대사를 통째로 거를 수 있어 config 로 끌 수 있게 함.
-    vad = bool(config.get("dub", {}).get("asr_vad_filter", True))
+    vad = bool(dconf.get("asr_vad_filter", True))
+    max_ns = float(dconf.get("asr_max_no_speech", 0.5))
+    min_lp = float(dconf.get("asr_min_logprob", -1.2))
     model = WhisperModel(size, device="cpu", compute_type="int8")
     segs, _ = model.transcribe(str(media), language=language, vad_filter=vad)
-    return [{"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
-            for s in segs if s.text.strip()]
+    out = []
+    for s in segs:
+        if not s.text.strip():
+            continue
+        if not reliable_segment(float(s.no_speech_prob), float(s.avg_logprob), max_ns, min_lp):
+            log.info("ASR 할루시네이션 의심 제외: %r (no_speech=%.2f, logprob=%.2f)",
+                     s.text.strip(), s.no_speech_prob, s.avg_logprob)
+            continue
+        out.append({"start": float(s.start), "end": float(s.end), "text": s.text.strip()})
+    return out
 
 
 def separate_vocals(media: str, out_dir, config: dict[str, Any]) -> Path:

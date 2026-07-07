@@ -99,6 +99,8 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   tts_backend: gptsovits           # gptsovits(루피 음색 크로스링구얼 클로닝, 권장) | xtts | elevenlabs
   language: ja                     # 기본 합성 언어(세그별 영어 대사는 자동 감지해 en 유지)
   asr_vad_filter: true             # ASR VAD(배경음악 큰 영상은 false 로 꺼야 대사 잡힘)
+  asr_max_no_speech: 0.5           # 할루시네이션 필터: no_speech_prob 초과 세그 제외
+  asr_min_logprob: -1.2            # 할루시네이션 필터: avg_logprob 미만 세그 제외
   burn_dub_subtitle: true          # 화면 한국어 자막 없을 때: 더빙 일본어 오디오 자막 번인
   dialogue_only: false             # true=실제 대사만 더빙, 씹는소리/감탄(리액션)은 원본 유지(ASMR용)
   speaker_wav: null                # xtts 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로
