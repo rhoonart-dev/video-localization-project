@@ -80,7 +80,9 @@ def _ocr_probe(video: str, config: dict[str, Any]) -> list[dict[str, Any]]:
     n = int(pc.get("frames", 8))
     dcfg = config.get("detect", {})
     ocr = make_ocr(dcfg.get("ocr_backend", "paddleocr"),
-                   dcfg.get("languages", ["korean"]), config=config)
+                   dcfg.get("languages", ["korean", "en"]),
+                   paddle_opts={"det_model": dcfg.get("paddle_det_model"),
+                                "rec_model": dcfg.get("paddle_rec_model")})
     down = int(dcfg.get("ocr_downscale_width", 0))
     frames = []
     with tempfile.TemporaryDirectory() as td:
