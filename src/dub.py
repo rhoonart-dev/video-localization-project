@@ -138,6 +138,42 @@ def synthesize_with_retry(synth_fn, max_dur: float, tries: int = 5):
     return best
 
 
+def f0_median(audio, sr: int, fmin: float = 80.0, fmax: float = 550.0) -> float:
+    """프레임 자기상관 기반 중위 F0(Hz). 무성/저에너지 프레임 제외. 0=측정 불가."""
+    import numpy as np
+    x = np.asarray(audio, dtype=np.float64)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    peak = np.abs(x).max()
+    if not sr or peak <= 0:
+        return 0.0
+    x = x / peak
+    w, hop = int(0.04 * sr), int(0.01 * sr)
+    vals = []
+    for i in range(0, len(x) - w, hop):
+        f = x[i:i + w]
+        if np.sqrt((f ** 2).mean()) < 0.05:
+            continue
+        f = f - f.mean()
+        ac = np.correlate(f, f, "full")[w - 1:]
+        lo, hi = int(sr / fmax), int(sr / fmin)
+        if hi >= len(ac):
+            continue
+        pk = int(np.argmax(ac[lo:hi])) + lo
+        if ac[pk] > 0.3 * ac[0]:
+            vals.append(sr / pk)
+    import statistics
+    return statistics.median(vals) if vals else 0.0
+
+
+def pitch_distance_octaves(f0_a: float, f0_b: float) -> float:
+    """두 F0 간 거리(옥타브). 측정 불가(0)면 inf — 비교 불가는 최악으로 취급."""
+    import math
+    if f0_a <= 0 or f0_b <= 0:
+        return float("inf")
+    return abs(math.log2(f0_a / f0_b))
+
+
 def _norm_scale(peak: float, target: float = 0.9) -> float:
     """보이스 트랙 피크 정규화 배율(헤드룸 확보 → limiter 펌핑 최소화). 무음 보호."""
     return (target / peak) if peak > 0 else 1.0
@@ -280,8 +316,32 @@ def _synthesize_gptsovits(text: str, lang: str, config: dict[str, Any]) -> bytes
         sr, audio = list(res)[-1]
         return sr, audio
 
-    sr, audio = synthesize_with_retry(_one, max_dur=float(g.get("max_synth_dur", 12.0)),
-                                      tries=int(g.get("retry_tries", 6)))
+    max_dur = float(g.get("max_synth_dur", 12.0))
+    tries = int(g.get("retry_tries", 6))
+    pitch_tries = int(g.get("pitch_match_tries", 3))
+    ref_f0 = 0.0
+    if pitch_tries > 1:
+        try:
+            rx, rsr = sf.read(str(resolve_path(g["ref_wav"])))
+            ref_f0 = f0_median(rx, rsr)
+        except Exception:
+            ref_f0 = 0.0
+    if ref_f0 > 0:
+        # 합성 피치는 회차별 편차가 큼(실측: 원본 405Hz 인데 244/274Hz 회차) →
+        # 후보 N개 중 레퍼런스 피치에 가장 가까운 것 선택. 0.15 옥타브(~10%) 안이면 조기 종료.
+        best, best_dist = None, float("inf")
+        for i in range(max(1, pitch_tries)):
+            sr, audio = synthesize_with_retry(_one, max_dur=max_dur, tries=tries)
+            dist = pitch_distance_octaves(f0_median(audio, sr), ref_f0)
+            if dist < best_dist:
+                best, best_dist = (sr, audio), dist
+            if best_dist <= 0.15:
+                break
+        sr, audio = best
+        log.info("피치 매칭: ref=%.0fHz, 선택 후보 거리=%.2f oct (%d회 시도)",
+                 ref_f0, best_dist, i + 1)
+    else:
+        sr, audio = synthesize_with_retry(_one, max_dur=max_dur, tries=tries)
     out = tempfile.mktemp(suffix=".wav")
     sf.write(out, audio, sr)
     return Path(out).read_bytes()

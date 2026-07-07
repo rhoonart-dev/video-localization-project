@@ -215,3 +215,23 @@ def test_pick_ref_segments_greedy_cap():
     assert [s["text"] for s in picked] == ["가"]    # 4+5>8 → 첫 세그까지만
     assert pick_ref_segments([], 8.0) == []
     assert [s["text"] for s in pick_ref_segments(segs, 20.0)] == ["가", "나", "다"]
+
+
+def test_pitch_distance_octaves():
+    from src.dub import pitch_distance_octaves
+    assert pitch_distance_octaves(440, 440) == 0.0
+    assert abs(pitch_distance_octaves(440, 220) - 1.0) < 1e-9   # 한 옥타브
+    assert pitch_distance_octaves(0, 440) == float("inf")       # 측정 불가 = 최악
+    # 실측 사례: 405Hz vs 274Hz ≈ 0.56 oct (기각), 405 vs 430 ≈ 0.09 oct (합격권)
+    assert pitch_distance_octaves(405, 274) > 0.5
+    assert pitch_distance_octaves(405, 430) < 0.15
+
+
+def test_f0_median_synthetic_tone():
+    import numpy as np
+    from src.dub import f0_median
+    sr = 16000
+    t = np.arange(sr) / sr
+    tone = np.sin(2 * np.pi * 300 * t)                          # 300Hz 정현파
+    assert abs(f0_median(tone, sr) - 300) < 15
+    assert f0_median(np.zeros(sr), sr) == 0.0                   # 무음 → 측정 불가
