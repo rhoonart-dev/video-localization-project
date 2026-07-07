@@ -168,3 +168,17 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 �
     jp_comments: 0.35              # 댓글 일본어(가나) 비율 — 일본 반응 최우선
     llm_jp_fit: 0.30               # LLM 일본 적합도(언어 의존 패널티 포함)
   report_top_n: 10
+  # --- Phase 2: 처리~승인 (업로드 클릭은 사람 — API 감사 전) ---
+  max_process_per_run: 3           # 1회 실행당 현지화 편수
+  download_dir: data/source/auto   # 원본 자동 다운로드 위치
+  content_type: anime              # process_video 인페인트 모드(캐릭터 애니메이션)
+  inpaint_backend: opencv          # 무설치 폴백(lama 설치 시 변경 권장)
+  dub_python: .venv-gsv/bin/python # Level C 더빙 인터프리터(GPT-SoVITS 스택, py3.11)
+  precheck:                        # 레벨 실측 판별(제목 추정 대체)
+    frames: 8                      # 샘플 프레임 수
+    min_conf: 0.75                 # 번인 텍스트 인정 신뢰도(OCR 노이즈 필터)
+    min_hangul: 2                  # 번인 인정 최소 한글 글자 수
+    min_persist: 2                 # 번인 인정 최소 등장 프레임 수
+  qa_gate:                         # 자동 QA 게이트(hold 도 승인 큐로 가되 표기)
+    max_flag_ratio: 0.5            # 검수필요 프레임 비율 상한
+    min_ssim: 0.85                 # 평균 SSIM 하한

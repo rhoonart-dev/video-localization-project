@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from engine.common import ensure_dir, get_logger, resolve_path
+from engine.common import ensure_dir, get_logger, resolve_path, write_json
 
 log = get_logger("qa")
 
@@ -166,5 +166,8 @@ def run_qa(video_id: str, original_dir: str, inpainted_dir: str, config: dict[st
                 log.warning("side-by-side 실패 %s: %s", name, e)
     report = base / "review_report.md"
     report.write_text(build_report(video_id, measures, config, extra), encoding="utf-8")
-    log.info("QA 리포트: %s (플래그 %d)", report, summarize(measures)["flagged"])
+    summary = summarize(measures)
+    # 기계 판독용(autopilot QA 게이트가 소비). 사람용 리포트와 항상 쌍으로 생성.
+    write_json({"video_id": video_id, **summary}, base / "qa_result.json")
+    log.info("QA 리포트: %s (플래그 %d)", report, summary["flagged"])
     return report
