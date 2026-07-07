@@ -1,5 +1,18 @@
 """src/precheck.py — 레벨 실측 판별 순수 로직 (OCR/ASR 실행 없음)."""
-from src.precheck import decide_route, hangul_chars, solid_hit_frames
+from src.precheck import (decide_route, ensure_korean_capable, hangul_chars,
+                          solid_hit_frames)
+
+
+def test_ensure_korean_capable_blocks_silent_rapidocr_fallback():
+    # paddle 초기화 실패 → rapidocr 폴백은 한국어 불가 → 번인 판정이 항상 0 이 되어
+    # 라우트가 뒤집힌다(B→C/A). 조용히 진행하지 말고 실패해야 한다.
+    ensure_korean_capable("paddleocr", "paddleocr")            # 정상 — 통과
+    try:
+        ensure_korean_capable("rapidocr", "paddleocr")
+        assert False, "한국어 불가 폴백을 거부해야 함"
+    except RuntimeError:
+        pass
+    ensure_korean_capable("easyocr", "paddleocr")              # 한국어 가능 폴백은 허용
 
 
 def test_hangul_chars_counts_only_hangul():

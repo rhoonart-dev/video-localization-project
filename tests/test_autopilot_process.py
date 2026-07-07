@@ -2,7 +2,39 @@
 import tempfile
 from pathlib import Path
 
-from src.autopilot import build_upload_text, final_video_for, qa_verdict
+from src.autopilot import (_content_context, _dub_cmd, _srt_texts,
+                           build_upload_text, final_video_for, qa_verdict)
+
+
+def test_dub_cmd_safe_for_hyphen_video_id_and_config():
+    # YouTube id 는 '-' 로 시작할 수 있다 → 분리형 인자면 argparse 가 옵션으로 오인.
+    cmd = _dub_cmd("/venv/python", "/tmp/v.mp4", "-abc123", config_path="/cfg.yaml")
+    assert "--video-id=-abc123" in cmd            # =붙임형이라 안전
+    assert "--video=/tmp/v.mp4" in cmd
+    assert "--level=C" in cmd
+    assert "--config=/cfg.yaml" in cmd            # 커스텀 config 전파
+    assert "--config=None" not in " ".join(_dub_cmd("/p", "/v", "x"))  # 미지정 시 생략
+
+
+def test_srt_texts_strips_numbers_and_timecodes():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "ja.srt"
+        p.write_text("1\n00:00:00,110 --> 00:00:02,110\nルーピー\n\n2\n"
+                     "00:00:03,000 --> 00:00:04,000\nカモン\n", encoding="utf-8")
+        assert _srt_texts(p) == ["ルーピー", "カモン"]
+        assert _srt_texts(Path(tmp) / "none.srt") == []
+
+
+def test_content_context_uses_measured_facts():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        pre = {"burn_frames": 0, "dialogue_segs": 1}
+        # 자막 없음 → "지어내지 말 것" 가드 문구
+        assert "지어내지 말 것" in _content_context(base, {"burn_frames": 0, "dialogue_segs": 0})
+        (base / "ja_dub.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nルーピー\n", encoding="utf-8")
+        ctx = _content_context(base, pre)
+        assert "ルーピー" in ctx and "[실측]" in ctx
 
 GATE = {"max_flag_ratio": 0.5, "min_ssim": 0.85}
 

@@ -85,7 +85,9 @@ def build_upload_text(meta: dict[str, Any], row: dict[str, Any], route: str,
     """upload_package/UPLOAD.md — 사람이 YouTube Studio 에서 복붙·체크할 전부."""
     lines = [f"# 업로드 패키지 — {row.get('video_id')}", "",
              f"- 원본: {row.get('title')} ({row.get('url')})",
-             f"- 처리 라우트: {route} (B=캡션교체 / C=더빙 / A=무변환·메타만)",
+             f"- 처리 라우트: {route} — autopilot 실측 라우팅(B=화면자막 교체 / C=음성 더빙 / "
+             f"A=무변환·메타만). ⚠ README 의 Level A/B/C(process_video 축)와 다른 축이니 "
+             f"수동 재처리 시 `src.process_video --level` 로 혼용 금지",
              f"- QA: {qa_note}", "",
              "## 제목 후보 (하나 선택)"]
     for i, t in enumerate(meta.get("title_candidates", []), 1):
@@ -247,6 +249,30 @@ def cmd_mark(config: dict[str, Any], video_id: str, state: str,
 
 
 # ── Phase 2: 처리 ~ 승인·패키지 ──────────────────────────────────────────
+def _srt_texts(path: pathlib.Path) -> list[str]:
+    """SRT 에서 대사 줄만(번호·타임코드 제외)."""
+    if not path.exists():
+        return []
+    out = []
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        s = ln.strip()
+        if s and not s.isdigit() and "-->" not in s:
+            out.append(s)
+    return out
+
+
+def _content_context(base: pathlib.Path, pre: dict[str, Any]) -> str:
+    """메타데이터 LLM 에 줄 '실측 내용' 컨텍스트 — 제목만으로 지어내는 것 방지."""
+    parts = [f"[실측] 화면 번인 자막 {pre.get('burn_frames', 0)}프레임, "
+             f"대사 {pre.get('dialogue_segs', 0)}세그먼트."]
+    lines = _srt_texts(base / "ja_dub.srt") or _srt_texts(base / "ja.srt")
+    if lines:
+        parts.append("영상 대사/자막(일본어): " + " / ".join(lines[:20]))
+    else:
+        parts.append("대사·화면 텍스트 없음 — 비언어(모션·사운드) 영상. 내용을 지어내지 말 것.")
+    return "\n".join(parts)
+
+
 def _download(row: dict[str, Any], config: dict[str, Any]) -> pathlib.Path:
     """원본 Short 다운로드(yt-dlp) → data/source/auto/<id>.mp4 (있으면 재사용)."""
     import subprocess
@@ -264,7 +290,18 @@ def _download(row: dict[str, Any], config: dict[str, Any]) -> pathlib.Path:
     return out
 
 
-def _run_dub(video: pathlib.Path, video_id: str, config: dict[str, Any]) -> None:
+def _dub_cmd(dub_py: str, video: str, video_id: str,
+             config_path: Optional[str] = None) -> list[str]:
+    """dub subprocess 인자 — `--opt=value` 형태(하이픈으로 시작하는 video_id 안전)."""
+    cmd = [dub_py, "-m", "src.dub", f"--video-id={video_id}",
+           f"--video={video}", "--level=C"]
+    if config_path:                        # 커스텀 config 를 서브프로세스에도 전파
+        cmd.append(f"--config={config_path}")
+    return cmd
+
+
+def _run_dub(video: pathlib.Path, video_id: str, config: dict[str, Any],
+             config_path: Optional[str] = None) -> None:
     """Level C(더빙) — GPT-SoVITS 스택은 .venv-gsv(파이썬 3.11) 전용이라 subprocess."""
     import os
     import subprocess
@@ -273,8 +310,7 @@ def _run_dub(video: pathlib.Path, video_id: str, config: dict[str, Any]) -> None
     if not pathlib.Path(dub_py).exists():
         raise RuntimeError(f"더빙 인터프리터 없음: {dub_py} (config autopilot.dub_python)")
     env = {**os.environ, "is_half": "False", "TERM": "xterm"}
-    res = subprocess.run([str(dub_py), "-m", "src.dub", "--video-id", video_id,
-                          "--video", str(video), "--level", "C"],
+    res = subprocess.run(_dub_cmd(str(dub_py), str(video), video_id, config_path),
                          capture_output=True, text=True, timeout=3600,
                          cwd=str(resolve_path(".")), env=env)
     if res.returncode != 0:
@@ -282,12 +318,17 @@ def _run_dub(video: pathlib.Path, video_id: str, config: dict[str, Any]) -> None
 
 
 def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
-                video_id: Optional[str] = None) -> int:
+                video_id: Optional[str] = None,
+                config_path: Optional[str] = None) -> int:
     """selected → 다운로드 → 실측 판별(precheck) → 라우트별 현지화 → QA → 승인 대기."""
     from src import precheck as precheck_mod
     ap = config.get("autopilot", {})
     conn = ledger.connect(config=config)
     try:
+        stale = ledger.get_by_state(conn, "processing")
+        if stale:   # 중단(Ctrl-C·전원)으로 남은 고아 — 복구 경로 안내
+            log.warning("processing 고아 %d편: %s — `process --video-id <id>` 로 재개 가능",
+                        len(stale), ", ".join(s["video_id"] for s in stale[:5]))
         if video_id:
             row = conn.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
             if row is None:
@@ -309,30 +350,40 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                 conn.execute("UPDATE videos SET level_guess=? WHERE video_id=?", (route, vid))
                 conn.commit()
 
+                base = resolve_path(f"{config['paths']['outputs_dir']}/{vid}")
+                # 이전 실행(다른 라우트)의 QA 잔재가 이번 판정을 오염시키지 않게 제거
+                (base / "qa_result.json").unlink(missing_ok=True)
                 if route == "B":
                     from src.process_video import process_video
                     process_video(str(video), vid, "B", config,
                                   content_type=ap.get("content_type", "anime"),
                                   inpaint_backend=ap.get("inpaint_backend", "opencv"))
                 elif route == "C":
-                    _run_dub(video, vid, config)
+                    _run_dub(video, vid, config, config_path)
                 # route A: 영상 무변환 — 메타데이터만
 
+                # 메타데이터: 제목만 주면 LLM 이 내용을 지어낸다(E2E 실측) →
+                # 실측 대사/자막을 컨텍스트로 전달해 실제 내용에 맞게 생성.
                 from src.metadata import generate
-                generate(vid, r.get("title") or "", "", config)
-
-                base = resolve_path(f"{config['paths']['outputs_dir']}/{vid}")
-                qa_path = base / "qa_result.json"
-                summary = read_json(qa_path) if qa_path.exists() else {"frames": 0}
+                generate(vid, r.get("title") or "", _content_context(base, pre), config)
+                summary = {"frames": 0}
+                if route == "B":                      # QA 는 인페인트 비교가 있는 B 만 의미
+                    try:
+                        summary = read_json(base / "qa_result.json")
+                    except Exception:                 # 부재·손상 → 측정 없음 폴백
+                        log.warning("qa_result.json 읽기 실패(%s) — 측정 없음 처리", vid)
                 verdict, why = qa_verdict(summary, ap.get("qa_gate", {}))
                 ledger.set_state(conn, vid, "qa_passed",
                                  notes=f"route={route}; qa={verdict}: {why}")
                 ledger.set_state(conn, vid, "pending_approval")
                 done += 1
                 log.info("처리 완료: %s (route=%s, qa=%s) → 승인 대기", vid, route, verdict)
-            except Exception as e:
+            except BaseException as e:                # Ctrl-C 도 원장에 기록 후 전파
                 log.exception("처리 실패: %s", vid)
-                ledger.set_state(conn, vid, "failed", notes=str(e)[:300], force=True)
+                ledger.set_state(conn, vid, "failed",
+                                 notes=str(e)[:300] or type(e).__name__, force=True)
+                if not isinstance(e, Exception):      # KeyboardInterrupt/SystemExit
+                    raise
         log.info("process 완료: %d/%d편 → pending_approval. 다음: pending / approve <id>",
                  done, len(rows))
         return done
@@ -354,14 +405,20 @@ def cmd_pending(config: dict[str, Any]) -> list[dict[str, Any]]:
     for r in rows:
         route = (r.get("level_guess") or "?")
         final = final_video_for(route, out_dir / r["video_id"])
+        if final is None:                              # B/C 산출물 누락 ≠ 무변환 — 구분 표시
+            final = ("(무변환 — 원본 사용)" if route == "A"
+                     else "(⚠ 산출물 없음 — process --video-id 재실행 필요)")
         print(f"{r['video_id']}  [{route}]  {r.get('title')}")
-        print(f"    검수: {final or '(무변환 — 원본 사용)'}  |  {r.get('notes')}")
+        print(f"    검수: {final}  |  {r.get('notes')}")
         print(f"    승인: python -m src.autopilot approve {r['video_id']}")
     return rows
 
 
 def cmd_approve(config: dict[str, Any], video_id: str) -> pathlib.Path:
-    """승인 → upload_package/ 생성(영상+메타+자막+체크리스트). 업로드 클릭은 사람이."""
+    """승인 → upload_package/ 생성(영상+메타+자막+체크리스트). 업로드 클릭은 사람이.
+
+    패키지 생성이 전부 성공한 뒤에만 approved 로 전이 — 실패 시 pending_approval 에
+    남아 pending 목록에서 보이고 재시도 가능."""
     import shutil
     ap = config.get("autopilot", {})
     conn = ledger.connect(config=config)
@@ -370,28 +427,33 @@ def cmd_approve(config: dict[str, Any], video_id: str) -> pathlib.Path:
         if row is None:
             raise SystemExit(f"원장에 없는 video_id: {video_id}")
         row = dict(row)
-        ledger.set_state(conn, video_id, "approved")
+
+        base = resolve_path(f"{config['paths']['outputs_dir']}/{video_id}")
+        route = row.get("level_guess") or "A"
+        final = final_video_for(route, base)
+        if final is None:
+            if route != "A":   # B/C 산출물 누락 — 한국어 원본을 일본어본으로 포장하면 안 됨
+                raise SystemExit(
+                    f"산출 영상 없음(route={route}): {base} — "
+                    f"`process --video-id {video_id}` 재실행 후 승인하세요")
+            final = resolve_path(ap.get("download_dir", "data/source/auto")) / f"{video_id}.mp4"
+            if not final.exists():
+                raise SystemExit(f"원본 영상 없음: {final} — process 먼저")
+
+        pkg = ensure_dir(base / "upload_package")
+        shutil.copy2(final, pkg / f"{video_id}_ja.mp4")
+        for srt in ("ja.srt", "ja_dub.srt"):
+            if (base / srt).exists():
+                shutil.copy2(base / srt, pkg / srt)
+        meta_path = base / "metadata_draft.json"
+        meta = read_json(meta_path) if meta_path.exists() else {}
+        (pkg / "UPLOAD.md").write_text(
+            build_upload_text(meta, row, route, qa_note=row.get("notes") or ""),
+            encoding="utf-8")
+
+        ledger.set_state(conn, video_id, "approved")   # 패키지 완성 후에만 전이
     finally:
         conn.close()
-
-    base = resolve_path(f"{config['paths']['outputs_dir']}/{video_id}")
-    pkg = ensure_dir(base / "upload_package")
-    route = row.get("level_guess") or "A"
-    final = final_video_for(route, base)
-    if final is None:  # A(무변환) → 다운로드 원본
-        src_v = resolve_path(ap.get("download_dir", "data/source/auto")) / f"{video_id}.mp4"
-        if not src_v.exists():
-            raise SystemExit(f"산출 영상 없음: route={route}, {base} — process 먼저")
-        final = src_v
-    shutil.copy2(final, pkg / f"{video_id}_ja.mp4")
-    for srt in ("ja.srt", "ja_dub.srt"):
-        if (base / srt).exists():
-            shutil.copy2(base / srt, pkg / srt)
-    meta_path = base / "metadata_draft.json"
-    meta = read_json(meta_path) if meta_path.exists() else {}
-    (pkg / "UPLOAD.md").write_text(
-        build_upload_text(meta, row, route, qa_note=row.get("notes") or ""),
-        encoding="utf-8")
     log.info("승인 완료 → 업로드 패키지: %s (업로드 클릭은 사람이 — YouTube Studio)", pkg)
     print(f"업로드 패키지: {pkg}")
     return pkg
@@ -467,7 +529,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     elif args.cmd == "rescore":
         cmd_rescore(config, args.video_id)
     elif args.cmd == "process":
-        cmd_process(config, args.limit, args.video_id)
+        cmd_process(config, args.limit, args.video_id, config_path=args.config)
     elif args.cmd == "pending":
         cmd_pending(config)
     elif args.cmd == "approve":

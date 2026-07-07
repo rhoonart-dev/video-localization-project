@@ -55,6 +55,17 @@ def decide_route(burn_frames: int, dialogue_segs: int, min_persist: int) -> str:
     return "A"
 
 
+def ensure_korean_capable(actual_backend: str, requested: str) -> None:
+    """OCR 폴백 가드 — 한국어 못 읽는 백엔드로 조용히 폴백되면 번인 판정이
+    항상 0 이 되어 라우트가 뒤집힌다(B→C/A). 판정을 계속하느니 실패가 낫다."""
+    if actual_backend == requested:
+        return
+    if actual_backend == "rapidocr":   # 기본 모델 한국어 인식 불가(engine/detect 경고와 동일 근거)
+        raise RuntimeError(
+            f"OCR 백엔드 '{requested}' 초기화 실패 → '{actual_backend}' 폴백은 한국어 인식 불가 — "
+            "번인 판정 불가능이라 precheck 를 중단합니다. paddleocr 설치/모델 확인 필요.")
+
+
 # ── 실측 (lazy 의존) ─────────────────────────────────────────────────────
 def _sample_frames(video: str, n: int, tmp: pathlib.Path) -> list[pathlib.Path]:
     """영상에서 n 장 균등 샘플 추출(ffmpeg)."""
@@ -71,18 +82,21 @@ def _sample_frames(video: str, n: int, tmp: pathlib.Path) -> list[pathlib.Path]:
     return outs
 
 
-def _ocr_probe(video: str, config: dict[str, Any]) -> list[dict[str, Any]]:
-    """샘플 프레임 OCR → detections.json 프레임 형식과 동일한 dict 목록."""
+def _ocr_probe(video: str, config: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    """샘플 프레임 OCR → (프레임 dict 목록, 실사용 백엔드명).
+
+    요청 백엔드가 한국어 불가 백엔드로 조용히 폴백되면 중단(ensure_korean_capable)."""
     import cv2
     from engine.detect import make_ocr, _ocr_scaled
 
     pc = config.get("autopilot", {}).get("precheck", {})
     n = int(pc.get("frames", 8))
     dcfg = config.get("detect", {})
-    ocr = make_ocr(dcfg.get("ocr_backend", "paddleocr"),
-                   dcfg.get("languages", ["korean", "en"]),
+    requested = dcfg.get("ocr_backend", "paddleocr")
+    ocr = make_ocr(requested, dcfg.get("languages", ["korean", "en"]),
                    paddle_opts={"det_model": dcfg.get("paddle_det_model"),
                                 "rec_model": dcfg.get("paddle_rec_model")})
+    ensure_korean_capable(ocr.name, requested)
     down = int(dcfg.get("ocr_downscale_width", 0))
     frames = []
     with tempfile.TemporaryDirectory() as td:
@@ -93,14 +107,17 @@ def _ocr_probe(video: str, config: dict[str, Any]) -> list[dict[str, Any]]:
             regions = [{"text": t, "confidence": float(c)}
                        for (_, t, c) in _ocr_scaled(ocr, img, down)]
             frames.append({"frame_idx": i, "regions": regions})
-    return frames
+    return frames, ocr.name
 
 
 def _asr_probe(video: str, config: dict[str, Any]) -> int:
-    """한국어 대사 세그먼트 수(한글 2자 이상만 인정 — 음악·효과음 오인 방지)."""
+    """한국어 대사 세그먼트 수(한글 2자 이상만 인정 — 음악·효과음 오인 방지).
+
+    모델은 실제 더빙 플로우(dub.asr_model)와 동일하게 — 판정과 실행의 기준 일치."""
     from faster_whisper import WhisperModel
 
-    model = WhisperModel("small", device="cpu", compute_type="int8")
+    size = config.get("dub", {}).get("asr_model", "small")
+    model = WhisperModel(size, device="cpu", compute_type="int8")
     vad = bool(config.get("dub", {}).get("asr_vad_filter", True))
     segs, _ = model.transcribe(video, language="ko", vad_filter=vad)
     return sum(1 for s in segs if hangul_chars(s.text) >= 2)
@@ -113,14 +130,14 @@ def precheck(video: str, video_id: str, config: dict[str, Any]) -> dict[str, Any
     min_hangul = int(pc.get("min_hangul", 2))
     min_persist = int(pc.get("min_persist", 2))
 
-    frames = _ocr_probe(video, config)
+    frames, backend = _ocr_probe(video, config)
     burn = solid_hit_frames(frames, min_conf, min_hangul)
     dialogue = _asr_probe(video, config)
     route = decide_route(burn, dialogue, min_persist)
 
     result = {"video_id": video_id, "route": route,
               "burn_frames": burn, "dialogue_segs": dialogue,
-              "sampled_frames": len(frames),
+              "sampled_frames": len(frames), "ocr_backend": backend,
               "params": {"min_conf": min_conf, "min_hangul": min_hangul,
                          "min_persist": min_persist},
               "ocr_frames": frames}

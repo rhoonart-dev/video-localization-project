@@ -11,7 +11,7 @@
 | Phase | 범위 | 상태 |
 |---|---|---|
 | **1. 선별 봇** | scan(채널 수집) → score(일본 적합도) → report(후보 TOP N). 업로드 없음 | ✅ 구현됨 |
-| **2. 반자동** | selected 건 자동 현지화(+레벨 실측 판별) → 자동 QA → 승인 게이트 → private+예약 업로드 | 설계 |
+| **2. 반자동** | process(다운로드→실측판별→현지화→QA) → pending/approve(업로드 패키지) → uploaded 기록. API 감사 전이라 **업로드 클릭은 사람**(YouTube Studio) | ✅ 구현됨 |
 | **3. 완전 자동** | KPI 피드백, QA 통과 건 무승인 예약 공개(실패만 알림) | 운영 후 판단 |
 
 ## Phase 1 사용법
@@ -24,6 +24,14 @@ python -m src.autopilot report --top 10     # outputs/autopilot_report.md (+csv)
 python -m src.autopilot status              # 상태별 집계
 python -m src.autopilot mark <id> --state selected   # 처리 시작 결정(사람)
 python -m src.autopilot rescore [id]        # scored → discovered 재채점(전량 스캔 후 권장)
+
+# Phase 2 — 처리~승인 (업로드 클릭은 사람)
+python -m src.autopilot process [--limit 3] [--video-id <id>]
+#   다운로드(yt-dlp) → 실측 판별(프레임 OCR+ASR: B=번인/C=더빙/A=무변환)
+#   → 현지화(B=process_video, C=src.dub·GPT-SoVITS) → 메타데이터(실측 대사 컨텍스트) → QA 게이트
+python -m src.autopilot pending             # 승인 대기(검수 경로 포함)
+python -m src.autopilot approve <id>        # → outputs/<id>/upload_package/ (영상+UPLOAD.md 체크리스트)
+python -m src.autopilot uploaded <id> --url <URL>   # 사람이 업로드 후 기록(종착)
 ```
 
 운영 순서 권장: **전량 `scan` 완료 후 `score`** — 점수의 조회수 성분이 원장 내 상대값이라,
@@ -51,11 +59,15 @@ discovered → scored → selected → processing → qa_passed → pending_appr
 
 Phase 1 은 `scored` 까지 자동. `selected/skipped` 는 `mark` 로 사람이 기록.
 
-### ⚠ 레벨(추정)의 한계
+### ⚠ 라우트(autopilot) ≠ Level(README/process_video) — 같은 글자, 다른 축
 
-리포트의 레벨은 **제목 기반 LLM 추정**이다. 처리 전 반드시 프레임 검사로 번인 자막
-유무를 실측할 것 — 번인 없는 Short 에 Level B 를 돌리면 OCR 이 노이즈를 오검출한다
-(2026-07-01 `loopy_short` 사례). Phase 2 에서 프레임 샘플 OCR 자동 판별로 대체 예정.
+- **리포트의 레벨(추정)**: 제목 기반 LLM 추정 — 참고용. `process` 가 실측으로 덮어쓴다.
+- **precheck 실측 라우트**: `B`=화면 한국어 자막 실측 → `process_video --level B`(캡션 교체) /
+  `C`=번인 없음+대사 실측 → `src.dub`(더빙 — **인페인트를 타지 않는다**, README Level C 와 다름) /
+  `A`=둘 다 없음 → **무변환**(메타데이터만, README Level A 의 '자막 사이드카'와 다름).
+- 정책: **번인+대사 둘 다 있으면 B**(캡션 교체 우선, 더빙 안 함 — 필요 시 사람이 후처리 결정).
+- pending 목록의 `[C]` 를 보고 `src.process_video --level C` 를 수동 실행하지 말 것 —
+  번인 없는 영상에 인페인트를 돌리는 오검출 사고(2026-07-01 loopy_short)가 재현된다.
 
 ## Phase 2 전제 조건 (지금 시작해야 하는 것)
 
