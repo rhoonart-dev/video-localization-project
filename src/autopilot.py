@@ -442,9 +442,13 @@ def cmd_approve(config: dict[str, Any], video_id: str) -> pathlib.Path:
 
         pkg = ensure_dir(base / "upload_package")
         shutil.copy2(final, pkg / f"{video_id}_ja.mp4")
-        for srt in ("ja.srt", "ja_dub.srt"):
+        # 자막은 라우트에 맞는 것만 — 다른 라우트의 잔재(예: C→A 재처리 후 낡은 ja_dub.srt) 배제
+        for srt in {"B": ["ja.srt"], "C": ["ja_dub.srt"]}.get(route, []):
             if (base / srt).exists():
                 shutil.copy2(base / srt, pkg / srt)
+        for stale in set(("ja.srt", "ja_dub.srt")) - set(
+                {"B": ["ja.srt"], "C": ["ja_dub.srt"]}.get(route, [])):
+            (pkg / stale).unlink(missing_ok=True)
         meta_path = base / "metadata_draft.json"
         meta = read_json(meta_path) if meta_path.exists() else {}
         (pkg / "UPLOAD.md").write_text(
