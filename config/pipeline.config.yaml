@@ -150,3 +150,19 @@ select:
     A: [먹방, asmr, mukbang, dance, 댄스, 릴스, eating, 디저트]
     B: [개그, 짤, 밈, meme, 꼬깔, 자막, 챌린지]
     C: [vlog, 브이로그, 일상, 대사, 더빙]
+
+autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 없음(리포트까지만)
+  channel_handle: "@zanmangloopy"  # 원 채널 핸들
+  scout_backend: auto              # auto(키 있으면 api) | api | ytdlp(보조·저빈도만)
+  ledger_path: outputs/autopilot.db
+  max_scan: 0                      # 스캔 상한(0=전체 — 채널 전량도 API ~46유닛)
+  max_score_per_run: 30            # 1회 실행당 스코어링 편수(LLM 비용 가드)
+  comment_sample: 100              # 댓글 언어분석 표본(YOUTUBE_API_KEY 필요, 없으면 생략)
+  min_duration: 3                  # 초 — 미만 제외
+  max_duration: 183                # 초 — Shorts 상한(3분, 2024-10 확대 기준)
+  weights:                         # 신호 가중치(없는 신호는 재정규화로 흡수)
+    views: 0.20                    # 조회수(log 정규화)
+    like_ratio: 0.15               # 좋아요율(5% 상한)
+    jp_comments: 0.35              # 댓글 일본어(가나) 비율 — 일본 반응 최우선
+    llm_jp_fit: 0.30               # LLM 일본 적합도(언어 의존 패널티 포함)
+  report_top_n: 10
