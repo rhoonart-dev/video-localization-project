@@ -195,3 +195,23 @@ def test_reliable_segment_filters_hallucination():
     assert reliable_segment(0.10, -0.30)            # 또렷한 실제 대사
     assert not reliable_segment(0.10, -1.5)         # 확신 없는 웅얼거림
     assert reliable_segment(0.5, -1.2)              # 경계값 포함
+
+
+def test_loop_plan_gpt_sovits_3_to_10s_requirement():
+    from src.dub import loop_plan
+    assert loop_plan(5.0) == 1                     # 이미 3~10s
+    assert loop_plan(2.35) == 2                    # 실측(loopy_short "루피"): x2 → 4.85s
+    assert loop_plan(0.2) == 0                     # 유의미한 발화 아님
+    assert loop_plan(0.0) == 0
+    n = loop_plan(1.0)                             # 반복 결과가 3.2~10s 안
+    assert n >= 3 and n * 1.0 + (n - 1) * 0.15 <= 10.0
+
+
+def test_pick_ref_segments_greedy_cap():
+    from src.dub import pick_ref_segments
+    segs = [{"start": 0, "end": 4, "text": "가"}, {"start": 5, "end": 10, "text": "나"},
+            {"start": 11, "end": 12, "text": "다"}]
+    picked = pick_ref_segments(segs, max_total=8.0)
+    assert [s["text"] for s in picked] == ["가"]    # 4+5>8 → 첫 세그까지만
+    assert pick_ref_segments([], 8.0) == []
+    assert [s["text"] for s in pick_ref_segments(segs, 20.0)] == ["가", "나", "다"]

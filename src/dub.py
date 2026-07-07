@@ -422,6 +422,93 @@ def separate_vocals(media: str, out_dir, config: dict[str, Any]) -> Path:
     return nov
 
 
+def loop_plan(duration: float, min_s: float = 3.2, max_s: float = 10.0,
+              gap: float = 0.15) -> int:
+    """GPT-SoVITS 레퍼런스 3~10초 요건 — 짧은 발화를 몇 번 반복할지(0=사용 불가).
+
+    실측 검증(2026-07-02 loopy_short): "루피" 2.35초 발화를 0.15초 간격 2회 연결해
+    4.85초 레퍼런스로 사용, 원본 음색 클로닝 성공."""
+    import math
+    if duration <= 0.3:                      # 유의미한 발화 아님
+        return 0
+    if duration >= min_s:
+        return 1
+    n = math.ceil((min_s + gap) / (duration + gap))
+    total = n * duration + (n - 1) * gap
+    return n if total <= max_s else 0
+
+
+def pick_ref_segments(segs: list[dict[str, Any]], max_total: float = 8.0) -> list[dict[str, Any]]:
+    """레퍼런스로 쓸 대사 세그먼트 — 앞에서부터 그리디로 합계 max_total 초까지."""
+    out, total = [], 0.0
+    for s in segs:
+        d = max(0.0, float(s.get("end", 0)) - float(s.get("start", 0)))
+        if d <= 0:
+            continue
+        if out and total + d > max_total:
+            break
+        out.append(s)
+        total += d
+    return out
+
+
+def build_self_ref(video: str, segs: list[dict[str, Any]], config: dict[str, Any],
+                   out_dir) -> Optional[dict[str, str]]:
+    """영상 '자체 목소리'로 GPT-SoVITS 레퍼런스 구축 → {ref_wav, prompt_text} 또는 None.
+
+    음색 은행(config ref)보다 해당 영상 목소리가 항상 더 정확하다(2026-07-02 실측 —
+    먹방 레퍼런스로 더빙하자 "루피 목소리가 아니다" 피드백, self-ref 로 원본 피치 일치).
+    플로우: demucs 보컬 분리 → 대사 구간 컷·정제 → 3초 미만이면 반복 연결.
+    실패(대사 없음·너무 짧음·분리 실패) 시 None — 호출자가 은행 레퍼런스로 폴백."""
+    import subprocess
+    from engine import common
+
+    picked = pick_ref_segments(segs)
+    if not picked:
+        return None
+    out_dir = ensure_dir(out_dir)
+    audio = out_dir / "self_src.wav"
+    if common.extract_audio(video, audio) is None:
+        return None
+    try:
+        nov = separate_vocals(str(audio), out_dir / "stems", config)
+        voc = Path(nov).parent / "vocals.wav"
+    except Exception as e:                    # demucs 미설치·실패 → 폴백
+        log.warning("self-ref 보컬 분리 실패(%s) → 은행 레퍼런스 사용", e)
+        return None
+    # 대사 구간만 이어붙이고 정제(저역 컷·노이즈 감쇠·레벨 정규화), mono 32k
+    pad = 0.05
+    parts, filters = [], []
+    for i, s in enumerate(picked):
+        st, en = max(0.0, float(s["start"]) - pad), float(s["end"]) + pad
+        filters.append(f"[0:a]atrim={st:.3f}:{en:.3f},asetpts=N/SR/TB[a{i}]")
+        parts.append(f"[a{i}]")
+    fc = (";".join(filters) + ";" + "".join(parts)
+          + f"concat=n={len(picked)}:v=0:a=1,"
+          + "highpass=f=60,afftdn=nf=-25,dynaudnorm=p=0.7:m=10[out]")
+    seg_wav = out_dir / "self_seg.wav"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(voc), "-filter_complex", fc,
+                    "-map", "[out]", "-ac", "1", "-ar", "32000", str(seg_wav)], check=True)
+    dur = float(common.probe(seg_wav).get("duration", 0.0) or 0.0)
+    n = loop_plan(dur)
+    if n == 0:
+        log.info("self-ref 발화 부족(%.2fs) → 은행 레퍼런스 사용", dur)
+        return None
+    ref = seg_wav
+    if n > 1:                                 # 0.15s 무음 간격으로 n 회 반복 연결
+        ref = out_dir / "self_ref.wav"
+        inputs = ["-i", str(seg_wav), "-f", "lavfi", "-t", "0.15",
+                  "-i", "anullsrc=r=32000:cl=mono"]
+        seq = "".join(["[0:a]" if i % 2 == 0 else "[1:a]" for i in range(2 * n - 1)])
+        subprocess.run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex",
+                        f"{seq}concat=n={2 * n - 1}:v=0:a=1", "-ar", "32000", "-ac", "1",
+                        str(ref)], check=True)
+    text = " ".join(s["text"] for s in picked)
+    prompt = " ".join([text] * n)
+    log.info("self-ref 레퍼런스: %s (%.2fs x%d, 전사=%r)", ref, dur, n, text[:60])
+    return {"ref_wav": str(ref), "prompt_text": prompt}
+
+
 def _mute_windows(in_path: Path, out_path: Path, windows: list[tuple[float, float]]) -> None:
     """오디오에서 지정 시간창만 음소거(나머지 원본 유지). dialogue_only 시 대사 구간만 제거."""
     import subprocess
@@ -472,6 +559,18 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     events = [{"start": s["start"], "end": s["end"], "text": jmap.get(s["text"], "")} for s in segs]
 
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
+
+    # self-ref: 이 영상의 원본 목소리를 레퍼런스로(음색 은행보다 정확) — 실패 시 은행 폴백
+    gsv = config.get("dub", {}).get("gptsovits", {})
+    if dub_backend(config) == "gptsovits" and gsv.get("self_ref", True):
+        sref = build_self_ref(video, segs, config, base / "ref")
+        if sref:
+            import copy
+            config = copy.deepcopy(config)
+            g = config["dub"]["gptsovits"]
+            g["ref_wav"], g["prompt_text"] = sref["ref_wav"], sref["prompt_text"]
+            g["prompt_lang"], g["aux_refs"] = "ko", []
+
     ja_srt = base / "ja_dub.srt"
     ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),
                       encoding="utf-8")

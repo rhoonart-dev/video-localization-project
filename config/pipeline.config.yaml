@@ -116,6 +116,7 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   remove_original_vocals: false    # true 면 Demucs 로 원본 목소리 제거 후 더빙(ASMR/반주만 유지)
   demucs_model: htdemucs           # 보컬 분리 모델
   gptsovits:                       # 루피 음색 클로닝(GPT-SoVITS v2). 환경/모델 영구 위치.
+    self_ref: true                 # 영상 자체 목소리를 레퍼런스로(음색 정확) — 실패 시 아래 은행 폴백
     repo_dir: outputs/GPT-SoVITS   # 소스 체크아웃(상대→프로젝트 루트). /tmp 정리 회피용 영구 위치
     model_dir: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained
     gpt_ckpt: s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
