@@ -51,6 +51,9 @@ class InpaintBackend:
         for fp in frames:
             mp = Path(masks_dir) / fp.name
             img = cv2.imread(str(fp))
+            if img is None:                      # 깨진/판독 불가 프레임 → 건너뜀(시퀀스 보호)
+                log.warning("프레임 판독 실패 → 건너뜀: %s", fp)
+                continue
             mask = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE) if mp.exists() else None
             if mask is None or not mask.any():
                 cv2.imwrite(str(out / fp.name), img)  # 마스크 없으면 그대로

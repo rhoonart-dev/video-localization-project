@@ -17,8 +17,9 @@ paddleocr>=3.0          # + paddlepaddle (CPU/GPU). 한국어 기본 백엔드
 rapidocr-onnxruntime>=1.3   # 경량 폴백(한국어 인식 약함 — 영문/숫자 위주)
 # easyocr>=1.7          # 최후 폴백
 
-# === LLM 트랜스크리에이션 (engine/translate.py, src/metadata.py) ===
-anthropic>=0.40
+# === LLM 트랜스크리에이션 (engine/llm.py 가 provider 분기) ===
+google-genai>=1.0       # 기본 provider=gemini (config.translate.provider)
+# anthropic>=0.40        # provider=anthropic 로 바꿀 때만 필요
 
 # === 인페인팅 백엔드 (engine/inpaint.py) — GPU(CUDA) 강력 권장 ===
 #   opencv 백엔드는 가중치 없이 동작하는 폴백(품질 낮음, 위 opencv-python로 충분).

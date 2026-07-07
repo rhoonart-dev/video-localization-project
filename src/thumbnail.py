@@ -42,26 +42,18 @@ def fit_font_size(box_w: int, box_h: int, text: str, max_size: int = 120) -> int
 
 # ── 카피 생성(LLM, 선택) ─────────────────────────────────────────────────
 def generate_copy(source_title: str, config: dict[str, Any], n: int = 2) -> list[str]:
-    key = get_secret("LLM_API_KEY", "ANTHROPIC_API_KEY")
+    key = get_secret("LLM_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
     if not key:
         log.warning("LLM 키 없음 → 카피 후보는 원제 기반 플레이스홀더. 사람이 작성 권장.")
         return [source_title[:12] or "残念ルーピー", "今日も残念ぴ"][:n]
-    try:
-        import anthropic
-    except ImportError:
-        log.warning("anthropic 미설치 → 플레이스홀더 카피.")
-        return [source_title[:12] or "残念ルーピー", "今日も残念ぴ"][:n]
-    import json
-    import os
+    from engine import llm
 
-    tcfg = config.get("translate", {})
-    client = anthropic.Anthropic(api_key=key)
-    resp = client.messages.create(
-        model=os.environ.get("LLM_MODEL") or tcfg.get("model"),
-        max_tokens=256, system=load_persona(config),
-        messages=[{"role": "user", "content": build_copy_prompt(source_title, n)}],
-    )
-    raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+    try:
+        raw = llm.complete(load_persona(config), build_copy_prompt(source_title, n),
+                           config, max_tokens=256)
+    except ImportError:
+        log.warning("LLM SDK 미설치 → 플레이스홀더 카피.")
+        return [source_title[:12] or "残念ルーピー", "今日も残念ぴ"][:n]
     try:
         from engine.translate import parse_llm_json
 

@@ -18,11 +18,10 @@ log = get_logger("qa")
 
 # ── 순수 헬퍼 ─────────────────────────────────────────────────────────────
 def seconds_to_tc(seconds: float) -> str:
-    """초 → mm:ss.cs 타임코드."""
-    seconds = max(0.0, seconds)
-    m = int(seconds // 60)
-    s = int(seconds % 60)
-    cs = int(round((seconds - int(seconds)) * 100))
+    """초 → mm:ss.cs 타임코드 (반올림 캐리를 초/분까지 전파)."""
+    cs_total = int(round(max(0.0, seconds) * 100))   # 먼저 센티초로 반올림 후 분해
+    m, rem = divmod(cs_total, 6000)
+    s, cs = divmod(rem, 100)
     return f"{m:02d}:{s:02d}.{cs:02d}"
 
 

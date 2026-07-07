@@ -103,24 +103,17 @@ def transcreate(texts: list[str], config: dict[str, Any], hero: bool = False,
     persona = load_persona(config)
     glossary = load_glossary(config)
     tcfg = config.get("translate", {})
-    import os
-    model = os.environ.get("LLM_MODEL") or (tcfg.get("hero_model") if hero else tcfg.get("model"))
+    from engine import llm
+    model = llm.resolve_model(config, hero=hero)
 
     drafts = deepl_draft(texts, config) if use_deepl else None
     system = build_system_prompt(persona, glossary)
     user = build_user_prompt(texts, drafts)
 
-    try:
-        import anthropic
-    except ImportError as e:
-        raise ImportError("anthropic 필요: pip install anthropic") from e
-    client = anthropic.Anthropic(api_key=get_secret("LLM_API_KEY", "ANTHROPIC_API_KEY", required=True))
-    log.info("트랜스크리에이션 model=%s 텍스트=%d hero=%s deepl=%s", model, len(texts), hero, use_deepl)
-    resp = client.messages.create(
-        model=model, max_tokens=int(tcfg.get("max_tokens", 1024)),
-        system=system, messages=[{"role": "user", "content": user}],
-    )
-    raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+    log.info("트랜스크리에이션 provider=%s model=%s 텍스트=%d hero=%s deepl=%s",
+             llm.provider(config), model, len(texts), hero, use_deepl)
+    raw = llm.complete(system, user, config, model=model,
+                       max_tokens=int(tcfg.get("max_tokens", 1024)), hero=hero)
     rows = parse_llm_json(raw)
 
     by_source = {r.get("source"): r for r in rows}
@@ -138,9 +131,8 @@ def translate(detections_path: str, config: dict[str, Any], hero: bool = False,
               use_deepl: bool = False, out_path: Optional[str] = None) -> TranslationDoc:
     doc = DetectionDoc.load(detections_path)
     texts = doc.unique_texts()
-    import os
-    model = os.environ.get("LLM_MODEL") or (
-        config["translate"].get("hero_model") if hero else config["translate"].get("model"))
+    from engine import llm
+    model = llm.resolve_model(config, hero=hero)
     entries = transcreate(texts, config, hero=hero, use_deepl=use_deepl)
     tdoc = TranslationDoc(video_id=doc.video_id, model=model or "unknown", draft=True, entries=entries)
 

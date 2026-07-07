@@ -2,10 +2,26 @@
 import pathlib
 import tempfile
 
-from src.dub import (_ass_time, _detect_lang, _fit_speed, _needs_truncate, _norm_scale,
-                     _srt_time, atempo_filters, build_alignment_report, dub_backend,
+from src.dub import (_ass_time, _detect_lang, _fit_speed, _is_dialogue, _needs_truncate,
+                     _norm_scale, _srt_time, atempo_filters, build_alignment_report, dub_backend,
                      parse_segments, require_level_c, segment_ext, segment_hard_caps,
                      synthesize_segment, synthesize_with_retry)
+
+
+def test_is_dialogue_keeps_real_sentences():
+    assert _is_dialogue("그럼 맛있게 잘 먹겠습니다!")
+    assert _is_dialogue("로제마라샹궈, 크림새우 그리고 치킨까지 준비해보았습니다")
+    assert _is_dialogue("주먹밥도 퀸처럼!")
+
+
+def test_is_dialogue_drops_reactions_and_noise():
+    assert not _is_dialogue("앙! 앙! 앙! 앙!")      # 씹는소리 반복
+    assert not _is_dialogue("음! 음! 음!")
+    assert not _is_dialogue("아!")                   # 2음절 이하 감탄
+    assert not _is_dialogue("냥!")
+    assert not _is_dialogue("Excuse me!")            # 짧은 영어 추임새
+    assert not _is_dialogue("1, 2, 3, 4, 5")         # 숫자 카운트
+    assert not _is_dialogue("   ")
 
 
 def test_atempo_filters_single_when_in_range():
