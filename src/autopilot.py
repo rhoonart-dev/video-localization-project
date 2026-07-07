@@ -378,10 +378,17 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                 ledger.set_state(conn, vid, "pending_approval")
                 done += 1
                 log.info("처리 완료: %s (route=%s, qa=%s) → 승인 대기", vid, route, verdict)
+                from src.notify import notify
+                final = final_video_for(route, base)
+                notify(f"✅ 처리 완료 [{route}] {r.get('title')}\n"
+                       f"검수: {final or '(무변환 — 원본)'}\n"
+                       f"승인: `python -m src.autopilot approve {vid}`")
             except BaseException as e:                # Ctrl-C 도 원장에 기록 후 전파
                 log.exception("처리 실패: %s", vid)
                 ledger.set_state(conn, vid, "failed",
                                  notes=str(e)[:300] or type(e).__name__, force=True)
+                from src.notify import notify
+                notify(f"❌ 처리 실패 {vid} ({r.get('title')}): {str(e)[:200]}")
                 if not isinstance(e, Exception):      # KeyboardInterrupt/SystemExit
                     raise
         log.info("process 완료: %d/%d편 → pending_approval. 다음: pending / approve <id>",
@@ -459,6 +466,9 @@ def cmd_approve(config: dict[str, Any], video_id: str) -> pathlib.Path:
     finally:
         conn.close()
     log.info("승인 완료 → 업로드 패키지: %s (업로드 클릭은 사람이 — YouTube Studio)", pkg)
+    from src.notify import notify
+    notify(f"📦 승인 완료 — {row.get('title')}\n패키지: {pkg}\n"
+           f"업로드는 YouTube Studio 에서(UPLOAD.md 체크리스트 참고)")
     print(f"업로드 패키지: {pkg}")
     return pkg
 
@@ -471,6 +481,30 @@ def cmd_uploaded(config: dict[str, Any], video_id: str, url: Optional[str] = Non
     finally:
         conn.close()
     log.info("uploaded 기록: %s (%s)", video_id, url or "URL 미기재")
+
+
+def cmd_daily(config: dict[str, Any], config_path: Optional[str] = None) -> None:
+    """launchd 일일 실행: scan → score → process(selected 있으면) → report → Slack 다이제스트.
+
+    사람의 리듬: Slack 다이제스트 보고 후보를 mark selected → 다음 daily 가 처리 →
+    승인 알림 오면 검수 후 approve → Studio 업로드."""
+    from src.notify import build_digest, notify
+    try:
+        cmd_scan(config)
+        cmd_score(config)
+        cmd_process(config, config_path=config_path)
+        cmd_report(config)
+        conn = ledger.connect(config=config)
+        try:
+            counts = ledger.counts(conn)
+            top = ledger.top_scored(conn, 5)
+            pending = ledger.get_by_state(conn, "pending_approval")
+        finally:
+            conn.close()
+        notify(build_digest(counts, top, pending))
+    except BaseException as e:                        # 실패도 반드시 사람에게
+        notify(f"🔴 autopilot daily 실패: {type(e).__name__}: {str(e)[:300]}")
+        raise
 
 
 def cmd_rescore(config: dict[str, Any], video_id: Optional[str] = None) -> int:
@@ -514,6 +548,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     pu = sub.add_parser("uploaded")
     pu.add_argument("video_id")
     pu.add_argument("--url", default=None)
+    sub.add_parser("daily")
     return p.parse_args(argv)
 
 
@@ -540,6 +575,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_approve(config, args.video_id)
     elif args.cmd == "uploaded":
         cmd_uploaded(config, args.video_id, args.url)
+    elif args.cmd == "daily":
+        cmd_daily(config, config_path=args.config)
 
 
 if __name__ == "__main__":

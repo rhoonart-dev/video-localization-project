@@ -84,10 +84,19 @@ Phase 1 은 `scored` 까지 자동. `selected/skipped` 는 `mark` 로 사람이 
 5. **업로드 페이스 정책** — YPP "inauthentic content"(2025-07 개정) 리스크 회피:
    하루 1~3편, 더빙·현지화 부가가치 명확화, 동일 템플릿 대량 살포 패턴 금지.
 
-## 운영(Phase 2+에서)
+## 운영 (구현됨 — launchd + Slack)
 
-- 스케줄: launchd LaunchAgent(StartCalendarInterval) + `caffeinate -i` 래핑
-  (cron 과 달리 슬립 중 놓친 실행을 깨어날 때 보충 실행)
-- 알림: Telegram 봇(실패·승인 요청) — 공개 서버 불필요(long polling)
-- 승인 게이트: `autopilot approve <id>` CLI 또는 Telegram 버튼 → 원장 상태 전이
+- **일일 자동 실행**: `launchd` 가 매일 07:00 `scripts/autopilot_daily.sh` 실행
+  (`~/Library/LaunchAgents/com.rhoonart.loopy-autopilot.plist`). 슬립 중이었으면
+  깨어날 때 보충 실행. 로그: `outputs/autopilot_daily.log`.
+  - daily = scan → score → process(selected 있으면) → report → **Slack 다이제스트**
+  - 끄기: `launchctl bootout gui/$(id -u)/com.rhoonart.loopy-autopilot`
+  - 수동 1회: `launchctl kickstart -k gui/$(id -u)/com.rhoonart.loopy-autopilot`
+- **Slack 알림**(`src/notify.py`, `.env` 의 SLACK_WEBHOOK_URL — 커밋 금지):
+  일일 다이제스트(후보 TOP·승인 대기·상태), 처리 완료/실패, 승인·패키지 완료.
+  미설정이면 조용히 생략 — 알림 장애가 파이프라인을 죽이지 않는다.
+- **사람의 리듬**: Slack 다이제스트 보고 `mark <id> --state selected` → 다음 daily 가
+  처리 → "처리 완료" 알림 오면 검수 후 `approve <id>` → Studio 업로드 → `uploaded <id> --url`.
+- **더빙 품질**(자동): self-ref(영상 자체 목소리 클로닝, `dub.gptsovits.self_ref`) +
+  피치 매칭 후보 선택(`pitch_match_tries`) + ASR 할루시네이션 필터(`asr_max_no_speech`).
 - 클라우드 CI 는 실처리 부적합(4GB+ 가중치, 느린 CPU) — 코드 테스트 전용

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.rhoonart.loopy-autopilot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/gimsewon/rhoonart/video-localization-project/scripts/autopilot_daily.sh</string>
+    </array>
+    <!-- 매일 07:00. 잠들어 있었으면 깨어날 때 보충 실행(launchd 기본 동작). -->
+    <key>StartCalendarInterval</key>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <key>StandardOutPath</key><string>/Users/gimsewon/rhoonart/video-localization-project/outputs/autopilot_launchd.log</string>
+    <key>StandardErrorPath</key><string>/Users/gimsewon/rhoonart/video-localization-project/outputs/autopilot_launchd.log</string>
+</dict>
+</plist>
