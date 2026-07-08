@@ -654,10 +654,23 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
         sref = build_self_ref(video, segs, config, base / "ref")
         if sref:
             import copy
-            config = copy.deepcopy(config)
-            g = config["dub"]["gptsovits"]
+            cand = copy.deepcopy(config)
+            g = cand["dub"]["gptsovits"]
             g["ref_wav"], g["prompt_text"] = sref["ref_wav"], sref["prompt_text"]
             g["prompt_lang"], g["aux_refs"] = "ko", []
+            # 사전 프로브: 형식·전사가 멀쩡해도 특정 self-ref 가 무음성 퇴화 합성을
+            # 유발할 수 있다(2026-07-08 커몬2 실측 — 보컬분리 잔여물 추정).
+            # 1회 시험 합성이 게이트를 통과해야만 채택, 아니면 은행 레퍼런스 유지.
+            probe = copy.deepcopy(cand)
+            pg = probe["dub"]["gptsovits"]
+            pg["pitch_match_tries"], pg["retry_tries"] = 1, 1
+            try:
+                _synthesize_gptsovits("ルーピー", "ja", probe)
+                config = cand
+                log.info("self-ref 프로브 통과 → 채택")
+            except Exception as e:
+                log.warning("self-ref 프로브 실패(%s) → 은행 레퍼런스(%s) 사용",
+                            str(e)[:80], gsv.get("ref_wav"))
 
     ja_srt = base / "ja_dub.srt"
     ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),
