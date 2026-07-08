@@ -660,10 +660,13 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
 
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
 
-    # self-ref: 이 영상의 원본 목소리를 레퍼런스로(음색 은행보다 정확) — 실패 시 은행 폴백
+    # self-ref: 이 영상의 원본 목소리를 레퍼런스로(음색 은행보다 정확).
+    # 실패 시 → 은행에서 이 영상 목소리에 '음향적으로 가장 가까운' 레퍼런스 자동 선택(refbank).
     gsv = config.get("dub", {}).get("gptsovits", {})
     if dub_backend(config) == "gptsovits" and gsv.get("self_ref", True):
-        sref = build_self_ref(video, segs, config, base / "ref")
+        ref_dir = base / "ref"
+        sref = build_self_ref(video, segs, config, ref_dir)
+        adopted = False
         if sref:
             import copy
             cand = copy.deepcopy(config)
@@ -681,10 +684,36 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
                           cwd=str(resolve_path(".")))
             if res.returncode == 0:
                 config = cand
+                adopted = True
                 log.info("self-ref 프로브 통과(격리) → 채택")
             else:
-                log.warning("self-ref 프로브 실패 → 은행 레퍼런스(%s) 사용: %s",
-                            gsv.get("ref_wav"), (res.stdout + res.stderr)[-120:])
+                log.warning("self-ref 프로브 실패 → 은행 최적매칭 시도: %s",
+                            (res.stdout + res.stderr)[-120:])
+        if not adopted:
+            # 은행 최적매칭: 이 영상 목소리(self_seg) 프로필에 가장 가까운 은행 레퍼런스.
+            from src import refbank
+            seg_wav = ref_dir / "self_seg.wav"
+            pick = None
+            if seg_wav.exists():
+                pick = refbank.best_ref(refbank.wav_profile(str(seg_wav)), config,
+                                        exclude_source=video_id)
+            if pick:
+                import copy
+                config = copy.deepcopy(config)
+                g = config["dub"]["gptsovits"]
+                g["ref_wav"], g["prompt_text"] = pick["ref_wav"], pick["prompt_text"]
+                g["prompt_lang"], g["aux_refs"] = "ko", pick["aux_refs"]
+            else:
+                log.warning("은행 매칭 불가(은행 비었거나 프로필 측정 실패) → config 고정 ref(%s)",
+                            gsv.get("ref_wav"))
+        # harvest: 이 영상의 '긴 깨끗한 대사'를 은행에 축적(다음 영상 매칭 개선). 실패 무시.
+        try:
+            from src import refbank
+            n = refbank.harvest(video, config, video_id, segs=segs)
+            if n:
+                log.info("은행 축적: %s 에서 %d클립", video_id, n)
+        except Exception as e:  # noqa: BLE001
+            log.info("harvest 생략(%s)", e)
 
     ja_srt = base / "ja_dub.srt"
     ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),

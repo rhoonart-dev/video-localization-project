@@ -523,6 +523,33 @@ def cmd_upload(config: dict[str, Any], video_id: str) -> dict[str, Any]:
     return {"youtube_id": yt_id, "publish_at": publish_at, "url": url}
 
 
+def cmd_refbank(config: dict[str, Any], action: str,
+                sources: Optional[list[str]] = None) -> None:
+    """레퍼런스 음성 은행 관리 — status(현황) | seed(대사 소스에서 축적).
+
+    seed 인자는 media 경로 또는 'path:source_id'. 보컬 분리본이면 자동 감지(vocals in name)."""
+    from src import refbank
+    if action == "status":
+        st = refbank.bank_status(config)
+        print(f"은행 클립 {st['clips']}개, 소스: {', '.join(st['sources']) or '없음'}")
+        return
+    if action == "seed":
+        total = 0
+        for spec in (sources or []):
+            path, _, sid = spec.partition(":")
+            src_id = sid or pathlib.Path(path).stem
+            is_voc = "vocal" in pathlib.Path(path).name.lower()
+            try:
+                n = refbank.harvest(str(resolve_path(path)), config, src_id, is_vocals=is_voc)
+                total += n
+                log.info("seed %s → %d클립", src_id, n)
+            except Exception as e:  # noqa: BLE001
+                log.warning("seed 실패 %s: %s", path, e)
+        print(f"은행 축적 완료: +{total}클립")
+        return
+    raise SystemExit("refbank action 은 status | seed")
+
+
 def cmd_uploaded(config: dict[str, Any], video_id: str, url: Optional[str] = None) -> None:
     """사람이 업로드를 마친 뒤 기록 — approved → uploaded (종착)."""
     conn = ledger.connect(config=config)
@@ -601,6 +628,9 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     sub.add_parser("daily")
     pl = sub.add_parser("upload")
     pl.add_argument("video_id")
+    prb = sub.add_parser("refbank")
+    prb.add_argument("action", choices=["status", "seed"])
+    prb.add_argument("sources", nargs="*", help="seed: media 경로 또는 path:source_id")
     return p.parse_args(argv)
 
 
@@ -631,6 +661,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_daily(config, config_path=args.config)
     elif args.cmd == "upload":
         cmd_upload(config, args.video_id)
+    elif args.cmd == "refbank":
+        cmd_refbank(config, args.action, args.sources)
 
 
 if __name__ == "__main__":
