@@ -250,3 +250,11 @@ def test_synth_level_gates_silent_candidates():
     # int16 dtype (GPT-SoVITS 출력 형식)
     i16 = np.full(1000, 16000, dtype=np.int16)
     assert abs(synth_level(i16) - 16000/32767) < 1e-3
+
+
+def test_reset_gptsovits_handle_clears_cache():
+    # 퇴화 레퍼런스가 모듈 캐시를 오염 → 리셋으로 다음 호출 시 재로드 보장
+    import src.dub as d
+    d._GSV = object()
+    d.reset_gptsovits_handle()
+    assert d._GSV is None

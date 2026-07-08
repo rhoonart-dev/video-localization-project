@@ -275,6 +275,18 @@ def _synthesize_xtts(text: str, speaker_wav: str, config: dict[str, Any]) -> byt
 _GSV = None  # GPT-SoVITS 핸들(프로세스당 1회 로드)
 
 
+def reset_gptsovits_handle() -> None:
+    """오염된 추론 상태 초기화 — 퇴화 레퍼런스가 모듈 내부 캐시를 오염시켜 이후
+    '모든' 레퍼런스의 합성이 무음이 되는 실측 사례(2026-07-08 커몬2) 대응.
+    다음 _gptsovits_handle 호출 시 모듈·가중치 재로드(~20s)."""
+    global _GSV
+    _GSV = None
+    import sys as _sys
+    for name in list(_sys.modules):
+        if "inference_webui" in name:
+            _sys.modules.pop(name, None)
+
+
 def _gptsovits_handle(config: dict[str, Any]):
     """GPT-SoVITS 추론 모듈 로드 + 가중치 적용(1회). config.dub.gptsovits 로 경로 지정.
 
@@ -671,6 +683,7 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
             except Exception as e:
                 log.warning("self-ref 프로브 실패(%s) → 은행 레퍼런스(%s) 사용",
                             str(e)[:80], gsv.get("ref_wav"))
+                reset_gptsovits_handle()   # 퇴화 ref 가 남긴 캐시 오염 제거(재로드)
 
     ja_srt = base / "ja_dub.srt"
     ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),
