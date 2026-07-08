@@ -276,3 +276,16 @@ def test_needs_brighten():
     assert not needs_brighten(4300, 4200)        # 이미 충분히 밝음
     assert not needs_brighten(0, 4200)           # 측정 불가 → 스킵
     assert not needs_brighten(2900, 0)           # 목표 없음 → 스킵
+
+
+def test_has_hangul():
+    from src.dub import has_hangul
+    assert has_hangul("マーラーヨプ떡")           # 한글 잔존
+    assert not has_hangul("マーラーヨプトク")       # 순수 가타카나
+    assert not has_hangul("")
+
+
+def test_fix_leaked_korean_noop_without_hangul():
+    # 한글 없으면 LLM 호출 없이 그대로(순수 경로) — 네트워크 의존 없음.
+    from src.dub import fix_leaked_korean
+    assert fix_leaked_korean("おいしくいただきます", {}) == "おいしくいただきます"

@@ -490,6 +490,34 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
 
 
 # ── 영상→더빙 (ASR → 번역 → 합성 → 믹스) ─────────────────────────────────
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+
+def has_hangul(text: str) -> bool:
+    return bool(_HANGUL_RE.search(text or ""))
+
+
+def fix_leaked_korean(text: str, config: dict[str, Any]) -> str:
+    """일본어 번역에 남은 한글(주로 고유명사)을 가타카나로 변환 — 단어 명료도.
+
+    한글 없으면 그대로. LLM 실패·여전히 한글 남으면 원문 유지(파이프라인 안 죽임)."""
+    if not has_hangul(text):
+        return text
+    try:
+        from engine.llm import complete
+        sys_p = ("다음 일본어 문장에 한국어 글자가 남아 있다. 한국어 부분만 문맥에 맞는 "
+                 "자연스러운 가타카나 발음 표기로 바꾸고 나머지는 그대로 둬라. "
+                 "설명 없이 교정된 일본어 문장 한 줄만 출력.")
+        out = complete(sys_p, text, config, max_tokens=256).strip().splitlines()[0].strip()
+        if out and not has_hangul(out):
+            log.info("한글 잔존 교정: %r → %r", text, out)
+            return out
+        log.warning("한글 잔존 교정 실패(여전히 한글) — 원문 유지: %r", text)
+    except Exception as e:  # noqa: BLE001
+        log.warning("한글 잔존 교정 오류(%s) — 원문 유지", e)
+    return text
+
+
 def reliable_segment(no_speech_prob: float, avg_logprob: float,
                      max_no_speech: float = 0.5, min_logprob: float = -1.2) -> bool:
     """Whisper 할루시네이션 필터 — 음악/효과음에서 '유료 광고 포함' 류 문구를 지어내는
@@ -676,7 +704,9 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     log.info("ASR 대사 %d개 받아쓰기 완료 → 트랜스크리에이션", len(segs))
 
     entries = transcreate([s["text"] for s in segs], config)   # 한국어→일본어(LLM, persona)
-    jmap = {e.source: e.target for e in entries}
+    # 한글 잔존 교정: LLM 이 고유명사(예: 마라엽'떡')를 한글로 남기면 더빙이 그걸 억지로
+    # 발음해 뭉개진다(2026-07-08 실측 "떡") → 가타카나로 자동 변환해 단어 명료도 확보.
+    jmap = {e.source: fix_leaked_korean(e.target, config) for e in entries}
     events = [{"start": s["start"], "end": s["end"], "text": jmap.get(s["text"], "")} for s in segs]
 
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
