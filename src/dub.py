@@ -670,20 +670,21 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
             g = cand["dub"]["gptsovits"]
             g["ref_wav"], g["prompt_text"] = sref["ref_wav"], sref["prompt_text"]
             g["prompt_lang"], g["aux_refs"] = "ko", []
-            # 사전 프로브: 형식·전사가 멀쩡해도 특정 self-ref 가 무음성 퇴화 합성을
-            # 유발할 수 있다(2026-07-08 커몬2 실측 — 보컬분리 잔여물 추정).
-            # 1회 시험 합성이 게이트를 통과해야만 채택, 아니면 은행 레퍼런스 유지.
-            probe = copy.deepcopy(cand)
-            pg = probe["dub"]["gptsovits"]
-            pg["pitch_match_tries"], pg["retry_tries"] = 1, 1
-            try:
-                _synthesize_gptsovits("ルーピー", "ja", probe)
+            # 사전 프로브(⚠ 반드시 서브프로세스): 퇴화 self-ref 는 프로세스 내
+            # 모델 캐시를 오염시켜 이후 '은행 ref 포함 모든' 합성을 무음으로 만든다
+            # (2026-07-08 실측 — 모듈 리셋도 무효). 격리 프로브 통과 시에만 채택.
+            import subprocess as _sp
+            res = _sp.run([sys.executable, "-m", "src.dub",
+                           f"--probe-ref={sref['ref_wav']}",
+                           f"--prompt-text={sref['prompt_text']}"],
+                          capture_output=True, text=True, timeout=600,
+                          cwd=str(resolve_path(".")))
+            if res.returncode == 0:
                 config = cand
-                log.info("self-ref 프로브 통과 → 채택")
-            except Exception as e:
-                log.warning("self-ref 프로브 실패(%s) → 은행 레퍼런스(%s) 사용",
-                            str(e)[:80], gsv.get("ref_wav"))
-                reset_gptsovits_handle()   # 퇴화 ref 가 남긴 캐시 오염 제거(재로드)
+                log.info("self-ref 프로브 통과(격리) → 채택")
+            else:
+                log.warning("self-ref 프로브 실패 → 은행 레퍼런스(%s) 사용: %s",
+                            gsv.get("ref_wav"), (res.stdout + res.stderr)[-120:])
 
     ja_srt = base / "ja_dub.srt"
     ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),
@@ -817,7 +818,38 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _probe_ref_main(argv: list[str]) -> None:
+    """`--probe-ref` 모드 — 레퍼런스 1개를 시험 합성해 exit 0(정상)/1(무음성 퇴화).
+
+    반드시 별도 프로세스로 호출할 것: 퇴화 레퍼런스는 프로세스 내 모델 캐시를
+    오염시켜 이후 모든 합성을 무음으로 만든다(2026-07-08 실측 — 모듈 리셋으로도
+    복구 불가, 하위 모듈 캐시 잔존). 격리가 유일하게 확실한 방역."""
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--probe-ref", required=True)
+    p.add_argument("--prompt-text", required=True)
+    p.add_argument("--config", default=None)
+    a = p.parse_args(argv)
+    config = load_config(a.config)
+    import copy
+    cfg = copy.deepcopy(config)
+    g = cfg["dub"]["gptsovits"]
+    g["ref_wav"], g["prompt_text"], g["prompt_lang"] = a.probe_ref, a.prompt_text, "ko"
+    g["aux_refs"], g["pitch_match_tries"], g["retry_tries"] = [], 1, 1
+    try:
+        _synthesize_gptsovits("ルーピー", "ja", cfg)
+        print("PROBE_OK")
+        sys.exit(0)
+    except Exception as e:
+        print(f"PROBE_FAIL: {str(e)[:120]}")
+        sys.exit(1)
+
+
 def main(argv: Optional[list[str]] = None) -> None:
+    argv = list(sys.argv[1:]) if argv is None else argv
+    if any(a.startswith("--probe-ref") for a in argv):
+        _probe_ref_main(argv)
+        return
     args = _parse_args(argv)
     config = load_config(args.config)
     if args.backend:
