@@ -125,12 +125,14 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
     model_dir: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained
     gpt_ckpt: s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
     sovits_ckpt: s2G2333k.pth
-    # 은행 레퍼런스 = 검증된 루피 실음성("루피" 발화 x2, 2026-07 실측 합성 성공·음색 확인).
-    # 먹방 인트로 ref 는 음색 불일치로 반려됨(2026-07-02) → 교체.
-    ref_wav: outputs/loopy_short/ref/loopy_self_ref_x2.wav
-    prompt_text: 루피 루피
+    # 은행 레퍼런스 = 루피 자연 문장 4.1s(adobe 콜라보 보컬분리, f0=405Hz).
+    # ⚠ 단어 반복 루프 ref('루피 루피')는 합성이 확률적 무음 퇴화(실측 2/8만 정상) —
+    # GPT-SoVITS 는 자연 발화 문장 ref 필요(실측 3/3 안정, 2026-07-08).
+    ref_wav: outputs/ref_bank/loopy_adobe1.wav
+    prompt_text: 생성형 채우기를 누르고 프롬프트만 입력하면
     prompt_lang: ko                # 레퍼런스(루피) 음성 언어
-    aux_refs: []                   # 멀티레퍼런스(동일 화자 클립 확보 시 추가)
+    aux_refs:                      # 멀티레퍼런스(동일 화자 → 음색 안정)
+      - outputs/ref_bank/loopy_adobe2.wav
     top_k: 5                       # 낮게 = 텍스트·레퍼런스 충실(2026-07-02 피치 일치 실측값)
     top_p: 0.5
     temperature: 0.3
