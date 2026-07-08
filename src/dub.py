@@ -346,21 +346,33 @@ def _synthesize_gptsovits(text: str, lang: str, config: dict[str, Any]) -> bytes
     max_dur = float(g.get("max_synth_dur", 12.0))
     tries = int(g.get("retry_tries", 6))
     pitch_tries = int(g.get("pitch_match_tries", 3))
-    # 피치 매칭 목표 = target_f0(있으면) > ref F0.
-    # 은행 ref 는 음색(밝기)용으로 고르므로 그 피치가 이 영상과 다를 수 있다 →
-    # 피치는 '이 영상 원본 F0'(target_f0)에 맞춰야 한다(2026-07-08 커몬2: ref 492 vs 원본 405).
+    min_level = float(g.get("min_synth_level", 0.05))
+    from src.refbank import profile_distance, spectral_centroid  # lazy(순환 import 회피)
+
+    # 매칭 목표 프로필 = target_profile(F0+밝기, 이 영상 원본) > target_f0 > ref.
+    # 합성은 회차별 F0·밝기 편차가 큼 → 후보 N개 중 '원본 목소리 프로필'에 가장 가까운 것 선택.
+    # 은행 ref 는 음색용이라 피치가 영상과 다를 수 있어(커몬2: ref 492 vs 원본 405),
+    # 밝기만이 아니라 F0 도 반드시 '원본'을 목표로 해야 한다.
+    target_prof = g.get("target_profile")
     goal_f0 = float(g.get("target_f0", 0) or 0)
-    if goal_f0 <= 0 and pitch_tries > 1:
+    if not target_prof and goal_f0 <= 0 and pitch_tries > 1:
         try:
             rx, rsr = sf.read(str(resolve_path(g["ref_wav"])))
             goal_f0 = f0_median(rx, rsr)
         except Exception:
             goal_f0 = 0.0
-    min_level = float(g.get("min_synth_level", 0.05))
-    if goal_f0 > 0:
-        # 합성 피치는 회차별 편차가 큼(실측: 원본 405Hz 인데 244/274Hz 회차) →
-        # 후보 N개 중 목표 피치에 가장 가까운 것 선택. 0.15 옥타브(~10%) 안이면 조기 종료.
-        # 단 '사실상 무음' 후보(synth_level < min_level)는 피치와 무관하게 기각 —
+    if not target_prof and goal_f0 > 0:
+        target_prof = {"f0": goal_f0, "centroid": 0.0}      # F0 만 알면 F0 만 매칭
+
+    def _cand_dist(sr, audio):
+        cf0 = f0_median(audio, sr)
+        if target_prof.get("centroid", 0) > 0:              # 밝기까지 알면 전체 프로필
+            return profile_distance({"f0": cf0, "centroid": spectral_centroid(audio, sr)},
+                                    target_prof, brightness_weight=0.7)
+        return pitch_distance_octaves(cf0, target_prof["f0"])  # F0 만
+
+    if target_prof and pitch_tries > 1:
+        # '사실상 무음' 후보(synth_level < min_level)는 프로필과 무관하게 기각 —
         # 무음이 선택되면 이후 정규화가 잡음을 증폭한다(2026-07-08 커몬2 실측).
         best, best_dist = None, float("inf")
         for i in range(max(1, pitch_tries)):
@@ -369,7 +381,7 @@ def _synthesize_gptsovits(text: str, lang: str, config: dict[str, Any]) -> bytes
             if lvl < min_level:
                 log.warning("무음성 합성 후보 기각(level=%.3f < %.2f) — 재시도", lvl, min_level)
                 continue
-            dist = pitch_distance_octaves(f0_median(audio, sr), goal_f0)
+            dist = _cand_dist(sr, audio)
             if dist < best_dist:
                 best, best_dist = (sr, audio), dist
             if best_dist <= 0.15:
@@ -379,8 +391,8 @@ def _synthesize_gptsovits(text: str, lang: str, config: dict[str, Any]) -> bytes
                 f"합성 {pitch_tries}회 전부 무음성(level<{min_level}) — "
                 "레퍼런스/모델 상태 확인 필요(쓰레기 게시 방지 위해 실패 처리)")
         sr, audio = best
-        log.info("피치 매칭: 목표=%.0fHz, 선택 후보 거리=%.2f oct (%d회 시도)",
-                 goal_f0, best_dist, i + 1)
+        log.info("프로필 매칭: 목표 f0=%.0f centroid=%.0f, 선택 거리=%.2f (%d회)",
+                 target_prof.get("f0", 0), target_prof.get("centroid", 0), best_dist, i + 1)
     else:
         sr, audio = synthesize_with_retry(_one, max_dur=max_dur, tries=tries)
         if synth_level(audio) < min_level:
@@ -669,6 +681,10 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     if dub_backend(config) == "gptsovits" and gsv.get("self_ref", True):
         ref_dir = base / "ref"
         sref = build_self_ref(video, segs, config, ref_dir)
+        # 이 영상 원본 목소리 프로필(F0+밝기) — 합성 후보 선택의 매칭 목표(음색·음높이 모두).
+        from src import refbank
+        seg_wav = ref_dir / "self_seg.wav"
+        self_prof = refbank.wav_profile(str(seg_wav)) if seg_wav.exists() else None
         adopted = False
         if sref:
             import copy
@@ -676,6 +692,8 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
             g = cand["dub"]["gptsovits"]
             g["ref_wav"], g["prompt_text"] = sref["ref_wav"], sref["prompt_text"]
             g["prompt_lang"], g["aux_refs"] = "ko", []
+            if self_prof and self_prof.get("f0", 0) > 0:
+                g["target_profile"] = self_prof
             # 사전 프로브(⚠ 반드시 서브프로세스): 퇴화 self-ref 는 프로세스 내
             # 모델 캐시를 오염시켜 이후 '은행 ref 포함 모든' 합성을 무음으로 만든다
             # (2026-07-08 실측 — 모듈 리셋도 무효). 격리 프로브 통과 시에만 채택.
@@ -693,22 +711,16 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
                 log.warning("self-ref 프로브 실패 → 은행 최적매칭 시도: %s",
                             (res.stdout + res.stderr)[-120:])
         if not adopted:
-            # 은행 최적매칭: 이 영상 목소리(self_seg) 프로필에 가장 가까운 은행 레퍼런스.
-            from src import refbank
-            seg_wav = ref_dir / "self_seg.wav"
-            pick, target = None, None
-            if seg_wav.exists():
-                target = refbank.wav_profile(str(seg_wav))
-                pick = refbank.best_ref(target, config, exclude_source=video_id)
+            # 은행 최적매칭: 이 영상 목소리(self_prof)에 가장 가까운 은행 레퍼런스(음색).
+            pick = refbank.best_ref(self_prof, config, exclude_source=video_id) if self_prof else None
             if pick:
                 import copy
                 config = copy.deepcopy(config)
                 g = config["dub"]["gptsovits"]
                 g["ref_wav"], g["prompt_text"] = pick["ref_wav"], pick["prompt_text"]
                 g["prompt_lang"], g["aux_refs"] = "ko", pick["aux_refs"]
-                # 음색은 은행 ref, 음높이는 이 영상 원본(target_f0)에 맞춘다(피치 매칭 목표).
-                if target and target.get("f0", 0) > 0:
-                    g["target_f0"] = target["f0"]
+                # 후보 선택은 이 영상 원본 프로필(F0+밝기)을 목표로 — 음색은 은행, 음높이는 원본.
+                g["target_profile"] = self_prof
             else:
                 log.warning("은행 매칭 불가(은행 비었거나 프로필 측정 실패) → config 고정 ref(%s)",
                             gsv.get("ref_wav"))
