@@ -465,12 +465,62 @@ def cmd_approve(config: dict[str, Any], video_id: str) -> pathlib.Path:
         ledger.set_state(conn, video_id, "approved")   # 패키지 완성 후에만 전이
     finally:
         conn.close()
+    if config.get("upload", {}).get("api_upload", False):
+        # 승인 = 사람의 공개 결정 → 이후 업로드·예약은 자동(실패 시 approved 유지, upload 로 재시도)
+        log.info("승인 완료 → API 자동 업로드 진행")
+        print(f"업로드 패키지: {pkg}")
+        cmd_upload(config, video_id)
+        return pkg
     log.info("승인 완료 → 업로드 패키지: %s (업로드 클릭은 사람이 — YouTube Studio)", pkg)
     from src.notify import notify
     notify(f"📦 승인 완료 — {row.get('title')}\n패키지: {pkg}\n"
            f"업로드는 YouTube Studio 에서(UPLOAD.md 체크리스트 참고)")
     print(f"업로드 패키지: {pkg}")
     return pkg
+
+
+def cmd_upload(config: dict[str, Any], video_id: str) -> dict[str, Any]:
+    """approved 영상을 API 로 업로드(private + publishAt 예약 공개).
+
+    공개 '결정'은 approve(사람)가 이미 했다 — 여기는 기계적 실행만.
+    실패 시 approved 에 남아 재시도 가능(`upload <id>`)."""
+    from datetime import datetime, timezone as _tz
+    from src import uploader
+    from src.notify import notify
+
+    ucfg = config.get("upload", {})
+    conn = ledger.connect(config=config)
+    try:
+        row = conn.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
+        if row is None:
+            raise SystemExit(f"원장에 없는 video_id: {video_id}")
+        row = dict(row)
+        if row["state"] != "approved":
+            raise SystemExit(f"업로드는 approved 상태에서만 (현재: {row['state']}) — approve 먼저")
+
+        base = resolve_path(f"{config['paths']['outputs_dir']}/{video_id}")
+        pkg_video = base / "upload_package" / f"{video_id}_ja.mp4"
+        if not pkg_video.exists():
+            raise SystemExit(f"패키지 영상 없음: {pkg_video} — approve 를 다시 실행")
+        meta_path = base / "metadata_draft.json"
+        draft = read_json(meta_path) if meta_path.exists() else {}
+
+        publish_at = uploader.next_publish_at(
+            datetime.now(_tz.utc), ledger.taken_publish_slots(conn),
+            hhmm=str(ucfg.get("default_time", "19:00")),
+            tz_name=str(ucfg.get("timezone", "Asia/Tokyo")))
+        body = uploader.build_upload_meta(draft, row, row.get("level_guess") or "A",
+                                          publish_at, ucfg)
+        yt_id = uploader.upload_video(pkg_video, body)
+        ledger.record_upload(conn, video_id, yt_id, publish_at)
+    finally:
+        conn.close()
+    url = f"https://youtu.be/{yt_id}"
+    notify(f"🚀 업로드 완료(예약 공개) — {row.get('title')}\n"
+           f"{url}\n공개 시각: {publish_at} (그 전까지 비공개 — Studio 에서 수정/취소 가능)")
+    log.info("업로드·예약 완료: %s → %s (publishAt=%s)", video_id, url, publish_at)
+    print(f"업로드 완료: {url} (예약 공개 {publish_at})")
+    return {"youtube_id": yt_id, "publish_at": publish_at, "url": url}
 
 
 def cmd_uploaded(config: dict[str, Any], video_id: str, url: Optional[str] = None) -> None:
@@ -549,6 +599,8 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     pu.add_argument("video_id")
     pu.add_argument("--url", default=None)
     sub.add_parser("daily")
+    pl = sub.add_parser("upload")
+    pl.add_argument("video_id")
     return p.parse_args(argv)
 
 
@@ -577,6 +629,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_uploaded(config, args.video_id, args.url)
     elif args.cmd == "daily":
         cmd_daily(config, config_path=args.config)
+    elif args.cmd == "upload":
+        cmd_upload(config, args.video_id)
 
 
 if __name__ == "__main__":

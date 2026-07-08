@@ -77,6 +77,12 @@ def connect(db_path: Optional[str] = None, config: Optional[dict[str, Any]] = No
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    # 마이그레이션: 기존 DB 에 없는 컬럼 추가(멱등)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(videos)")}
+    if "publish_at" not in cols:                    # 예약 공개 슬롯(하루 1편 페이스 추적)
+        conn.execute("ALTER TABLE videos ADD COLUMN publish_at TEXT")
+    if "youtube_id" not in cols:                    # 업로드된 유튜브 영상 id
+        conn.execute("ALTER TABLE videos ADD COLUMN youtube_id TEXT")
     return conn
 
 
@@ -156,6 +162,22 @@ def record_score(conn: sqlite3.Connection, video_id: str, total: float,
             raise KeyError(f"원장에 없는 video_id: {video_id}")
         raise ValueError(f"스코어 기록 불가: {video_id} 는 {row['state']} 상태(처리 진행 중 보호)")
     conn.commit()
+
+
+def record_upload(conn: sqlite3.Connection, video_id: str, youtube_id: str,
+                  publish_at: str) -> None:
+    """업로드 성공 기록 + uploaded 전이(approved 에서만 — 전이 규칙이 검증)."""
+    set_state(conn, video_id, "uploaded",
+              notes=f"https://youtu.be/{youtube_id} publishAt={publish_at}")
+    conn.execute("UPDATE videos SET youtube_id=?, publish_at=?, updated_at=? WHERE video_id=?",
+                 (youtube_id, publish_at, _now(), video_id))
+    conn.commit()
+
+
+def taken_publish_slots(conn: sqlite3.Connection) -> set[str]:
+    """이미 잡힌 예약 슬롯(하루 1편 페이스의 근거)."""
+    return {r["publish_at"] for r in conn.execute(
+        "SELECT publish_at FROM videos WHERE publish_at IS NOT NULL")}
 
 
 def top_scored(conn: sqlite3.Connection, n: int = 10) -> list[dict[str, Any]]:

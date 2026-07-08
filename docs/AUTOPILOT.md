@@ -12,6 +12,7 @@
 |---|---|---|
 | **1. 선별 봇** | scan(채널 수집) → score(일본 적합도) → report(후보 TOP N). 업로드 없음 | ✅ 구현됨 |
 | **2. 반자동** | process(다운로드→실측판별→현지화→QA) → pending/approve(업로드 패키지) → uploaded 기록. API 감사 전이라 **업로드 클릭은 사람**(YouTube Studio) | ✅ 구현됨 |
+| **2.9 자동 업로드** | approve(사람) → API 업로드(private+publishAt 예약, 하루 1편 슬롯 분산) 자동. 2026-07-08 실측으로 감사 없이 동작 확인 | ✅ 구현됨 |
 | **3. 완전 자동** | KPI 피드백, QA 통과 건 무승인 예약 공개(실패만 알림) | 운영 후 판단 |
 
 ## Phase 1 사용법
@@ -31,8 +32,16 @@ python -m src.autopilot process [--limit 3] [--video-id <id>]
 #   → 현지화(B=process_video, C=src.dub·GPT-SoVITS) → 메타데이터(실측 대사 컨텍스트) → QA 게이트
 python -m src.autopilot pending             # 승인 대기(검수 경로 포함)
 python -m src.autopilot approve <id>        # → outputs/<id>/upload_package/ (영상+UPLOAD.md 체크리스트)
-python -m src.autopilot uploaded <id> --url <URL>   # 사람이 업로드 후 기록(종착)
+python -m src.autopilot uploaded <id> --url <URL>   # (수동 업로드 시) 기록
+python -m src.autopilot upload <id>         # approved 건 API 업로드 재시도(자동 실패 시)
 ```
+
+**자동 업로드(upload.api_upload=true)**: `approve` 가 곧 사람의 공개 결정 —
+이후 업로드는 자동: private + publishAt(**다음 빈 19:00 JST 슬롯, 하루 1편 분산**),
+제목은 metadata_draft 1안, madeForKids 는 config `upload.made_for_kids`(⚠ 정책 확정 필요).
+실패 시 approved 유지 → `upload <id>` 재시도. 예약 취소/수정은 Studio 에서 가능.
+전제: `scripts/yt_upload_test.py` 최초 1회 인증(토큰 outputs/yt_oauth_token.json).
+근거: 2026-07-08 실측 — 이 프로젝트는 감사 없이 업로드·공개 전환 동작(문서와 다름, 대량 시 재확인).
 
 운영 순서 권장: **전량 `scan` 완료 후 `score`** — 점수의 조회수 성분이 원장 내 상대값이라,
 스캔 도중 채점하면 정규화 기준이 흔들린다(흔들렸으면 `rescore` 후 재채점).

@@ -93,7 +93,11 @@ encode:
 upload:
   timezone: Asia/Tokyo
   default_time: "19:00"            # JST 권장 게시 시간(측정 후 튜닝)
-  auto_publish: false              # ⚠ 항상 false — 게시는 사람이 최종 클릭
+  auto_publish: false              # ⚠ 항상 false — '공개 결정'은 사람(approve)이 한다
+  api_upload: true                 # approve 후 업로드·예약(private+publishAt)을 API 로 자동 실행
+                                   # (2026-07-08 실측: 감사 없이 동작 확인. 결정≠실행 — 결정은 여전히 사람)
+  category_id: "24"                # YouTube 카테고리(24=Entertainment)
+  made_for_kids: false             # ⚠ 정책 결정 반영 필요(COPPA) — 잔망루피=성인 밈 타깃 전제
 
 dub:                               # Level C 한정. 게이트 통과 후에만.
   tts_backend: gptsovits           # gptsovits(루피 음색 크로스링구얼 클로닝, 권장) | xtts | elevenlabs
