@@ -268,3 +268,11 @@ def test_target_f0_overrides_ref_pitch_goal():
     assert resolve_goal({"target_f0": 405}, 492) == 405     # 영상 원본 우선
     assert resolve_goal({}, 492) == 492                     # 없으면 ref(=self-ref 시 동일)
     assert resolve_goal({"target_f0": 0}, 492) == 492       # 0은 무시
+
+
+def test_needs_brighten():
+    from src.dub import needs_brighten
+    assert needs_brighten(2900, 4200)            # 더빙이 어두움 → 보정
+    assert not needs_brighten(4300, 4200)        # 이미 충분히 밝음
+    assert not needs_brighten(0, 4200)           # 측정 불가 → 스킵
+    assert not needs_brighten(2900, 0)           # 목표 없음 → 스킵

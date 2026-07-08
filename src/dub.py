@@ -477,6 +477,12 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
     draft = base / "dub_ja_draft.wav"
     _assemble_timeline(seg_files, draft)
     _normalize_track(draft, float(config.get("dub", {}).get("voice_norm_peak", 0.9)))
+    # 밝기 보정: 합성이 고역을 뭉개 원본보다 어둡고 자음이 흐릿(단어 뭉개짐) → 원본 음색 밝기에
+    # 맞춰 하이쉘프 부스트. 음색 일치 + 단어 또렷함 동시 개선(2026-07-08 A/B 실측: 원본 4200 vs 더빙 2900).
+    tgt_cen = float(config.get("dub", {}).get("gptsovits", {})
+                    .get("target_profile", {}).get("centroid", 0) or 0)
+    brighten_track(draft, tgt_cen, config)
+    _normalize_track(draft, float(config.get("dub", {}).get("voice_norm_peak", 0.9)))
     write_json(build_alignment_report(video_id, segments, voice_ref),
                base / "alignment_report.json")
     log.info("더빙 초안(검토 전): %s (세그먼트 %d, backend=%s)", draft, len(segments), backend)
@@ -811,6 +817,56 @@ def _fit_audio(in_path: Path, out_path: Path, target_sec: float, max_speedup: fl
                             "-af", f"afade=t=out:st={fade_st:.3f}:d=0.12", str(tmp)],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             tmp.replace(out_path)
+
+
+def needs_brighten(cur_centroid: float, target_centroid: float, tol: float = 0.98) -> bool:
+    """더빙 밝기(centroid)가 원본보다 유의하게 낮으면 보정 필요."""
+    return cur_centroid > 0 and target_centroid > 0 and cur_centroid < target_centroid * tol
+
+
+def brighten_track(wav: Path, target_centroid: float, config: dict[str, Any]) -> float:
+    """더빙 보이스 밝기를 원본 target_centroid 에 맞게 하이쉘프+프레즌스 부스트(적응형).
+
+    자음 또렷함(단어 정확도) + 음색 일치 동시 개선. 게인은 원본 대비 부족분에 따라 자동,
+    max_gain_db 로 상한(과하면 쉭/노이즈 증폭). 반환: 적용 게인(dB). 비활성/불필요 시 0."""
+    import shutil
+    import subprocess
+
+    from src.refbank import spectral_centroid
+
+    bconf = config.get("dub", {}).get("brighten", {})
+    if not bconf.get("enabled", True) or target_centroid <= 0:
+        return 0.0
+    max_db = float(bconf.get("max_gain_db", 8.0))
+    shelf_hz = float(bconf.get("shelf_hz", 2500))
+    presence_hz = float(bconf.get("presence_hz", 3500))
+    step = float(bconf.get("step_db", 2.0))
+
+    def _cen(p: Path) -> float:
+        import soundfile as sf
+        x, sr = sf.read(str(p))
+        return spectral_centroid(x, sr)
+
+    cur = _cen(wav)
+    if not needs_brighten(cur, target_centroid):
+        log.info("밝기 보정 생략(이미 충분: %.0f ≥ %.0f)", cur, target_centroid)
+        return 0.0
+    orig = wav.with_suffix(".prebright.wav")
+    shutil.copy(str(wav), str(orig))
+    gain, out_cen = 0.0, cur
+    while gain < max_db and needs_brighten(out_cen, target_centroid):
+        gain = min(max_db, gain + step)
+        # 하이쉘프(전반적 밝기) + 프레즌스 피킹(자음/명료도) + 리미터(피크 보호)
+        af = (f"highshelf=f={shelf_hz}:g={gain:.1f},"
+              f"equalizer=f={presence_hz}:width_type=q:w=1.2:g={gain * 0.6:.1f},"
+              f"alimiter=limit=0.97")
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(orig),
+                        "-af", af, str(wav)], check=True)
+        out_cen = _cen(wav)
+    orig.unlink(missing_ok=True)
+    log.info("밝기 보정: +%.1fdB(shelf@%.0f, presence@%.0f) → centroid %.0f→%.0f (목표 %.0f)",
+             gain, shelf_hz, presence_hz, cur, out_cen, target_centroid)
+    return gain
 
 
 def _assemble_timeline(seg_files: list[tuple[float, Path]], out: Path) -> None:

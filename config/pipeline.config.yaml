@@ -115,6 +115,12 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   max_speedup: 1.6                 # time-stretch 과도한 배속 방지 클램프(세그별 침범 캡과 병행)
   voice_norm_peak: 0.9             # 어셈블된 보이스 트랙 피크 정규화(헤드룸 확보)
   loudnorm: false                  # ASMR 다이내믹 보존 → EBU R128 정규화 끔
+  brighten:                        # 더빙 밝기 보정(음색 일치 + 자음 또렷함/단어 정확도)
+    enabled: true
+    max_gain_db: 8.0               # 하이쉘프 상한(과하면 쉭소리·노이즈 증폭)
+    shelf_hz: 2500                 # 전반 밝기 하이쉘프 주파수
+    presence_hz: 3500              # 자음 명료도 프레즌스 피킹
+    step_db: 2.0                   # 적응 스텝(목표 centroid 도달까지)
   limiter: true                    # 최종 믹스 피크만 제한(브릭월) → 합산 클리핑(째짐) 방지
   peak_limit: 0.97                 # 리미터 상한(0~1)
   remove_original_vocals: true     # 원본 한국어 목소리 제거(Demucs) 후 더빙 — 안 끄면 한·일 음성 겹침
