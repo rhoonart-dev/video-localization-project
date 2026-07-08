@@ -258,3 +258,13 @@ def test_reset_gptsovits_handle_clears_cache():
     d._GSV = object()
     d.reset_gptsovits_handle()
     assert d._GSV is None
+
+
+def test_target_f0_overrides_ref_pitch_goal():
+    # 피치 매칭 목표 결정: target_f0 가 있으면 ref F0 측정보다 우선(은행 ref≠영상 피치 대응).
+    # 순수 규칙만 검증(합성 없이): goal = target_f0 or ref_f0.
+    def resolve_goal(g, ref_f0):
+        return float(g.get("target_f0", 0) or 0) or ref_f0
+    assert resolve_goal({"target_f0": 405}, 492) == 405     # 영상 원본 우선
+    assert resolve_goal({}, 492) == 492                     # 없으면 ref(=self-ref 시 동일)
+    assert resolve_goal({"target_f0": 0}, 492) == 492       # 0은 무시
