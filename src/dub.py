@@ -174,6 +174,21 @@ def pitch_distance_octaves(f0_a: float, f0_b: float) -> float:
     return abs(math.log2(f0_a / f0_b))
 
 
+def synth_level(audio) -> float:
+    """합성 오디오의 정규화 피크(0~1). int/float dtype 모두 지원.
+
+    GPT-SoVITS 가 간혹 '사실상 무음' 실패 합성을 내는데(실측: 커몬2 업로드본 —
+    무음 후보가 피치 매칭을 통과한 뒤 정규화로 증폭돼 잡음이 됨), 피크 정규화 기반
+    F0 측정은 이를 못 거른다 → 절대 레벨로 별도 게이트."""
+    import numpy as np
+    x = np.asarray(audio)
+    if x.size == 0:
+        return 0.0
+    if np.issubdtype(x.dtype, np.integer):
+        return float(np.abs(x).max()) / float(np.iinfo(x.dtype).max)
+    return float(np.abs(x).max())
+
+
 def _norm_scale(peak: float, target: float = 0.9) -> float:
     """보이스 트랙 피크 정규화 배율(헤드룸 확보 → limiter 펌핑 최소화). 무음 보호."""
     return (target / peak) if peak > 0 else 1.0
@@ -326,22 +341,35 @@ def _synthesize_gptsovits(text: str, lang: str, config: dict[str, Any]) -> bytes
             ref_f0 = f0_median(rx, rsr)
         except Exception:
             ref_f0 = 0.0
+    min_level = float(g.get("min_synth_level", 0.05))
     if ref_f0 > 0:
         # 합성 피치는 회차별 편차가 큼(실측: 원본 405Hz 인데 244/274Hz 회차) →
         # 후보 N개 중 레퍼런스 피치에 가장 가까운 것 선택. 0.15 옥타브(~10%) 안이면 조기 종료.
+        # 단 '사실상 무음' 후보(synth_level < min_level)는 피치와 무관하게 기각 —
+        # 무음이 선택되면 이후 정규화가 잡음을 증폭한다(2026-07-08 커몬2 실측).
         best, best_dist = None, float("inf")
         for i in range(max(1, pitch_tries)):
             sr, audio = synthesize_with_retry(_one, max_dur=max_dur, tries=tries)
+            lvl = synth_level(audio)
+            if lvl < min_level:
+                log.warning("무음성 합성 후보 기각(level=%.3f < %.2f) — 재시도", lvl, min_level)
+                continue
             dist = pitch_distance_octaves(f0_median(audio, sr), ref_f0)
             if dist < best_dist:
                 best, best_dist = (sr, audio), dist
             if best_dist <= 0.15:
                 break
+        if best is None:
+            raise RuntimeError(
+                f"합성 {pitch_tries}회 전부 무음성(level<{min_level}) — "
+                "레퍼런스/모델 상태 확인 필요(쓰레기 게시 방지 위해 실패 처리)")
         sr, audio = best
         log.info("피치 매칭: ref=%.0fHz, 선택 후보 거리=%.2f oct (%d회 시도)",
                  ref_f0, best_dist, i + 1)
     else:
         sr, audio = synthesize_with_retry(_one, max_dur=max_dur, tries=tries)
+        if synth_level(audio) < min_level:
+            raise RuntimeError(f"무음성 합성(level<{min_level}) — 쓰레기 게시 방지 위해 실패 처리")
     out = tempfile.mktemp(suffix=".wav")
     sf.write(out, audio, sr)
     return Path(out).read_bytes()

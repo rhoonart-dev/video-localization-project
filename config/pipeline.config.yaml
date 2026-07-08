@@ -137,6 +137,7 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
     temperature: 0.3
     retry_tries: 6                 # 환각(비정상 장발화) 시 재합성 횟수
     pitch_match_tries: 3           # 후보 N개 중 레퍼런스 피치 최근접 선택(1=끔)
+    min_synth_level: 0.05          # 합성 피크 하한 — 무음성 실패 합성 기각(증폭 잡음 방지)
     max_synth_dur: 12.0            # 이 길이 초과면 환각으로 보고 재시도
   xtts_model: tts_models/multilingual/multi-dataset/xtts_v2
   #  ⚠ XTTS-v2 가중치 라이선스 = Coqui Public Model License(비상업). 상업 사용 전 확인.

@@ -235,3 +235,18 @@ def test_f0_median_synthetic_tone():
     tone = np.sin(2 * np.pi * 300 * t)                          # 300Hz 정현파
     assert abs(f0_median(tone, sr) - 300) < 15
     assert f0_median(np.zeros(sr), sr) == 0.0                   # 무음 → 측정 불가
+
+
+def test_synth_level_gates_silent_candidates():
+    import numpy as np
+    from src.dub import synth_level
+    # 실측 사례(2026-07-08 커몬2): 무음성 합성이 피치 매칭 통과 → 정규화 증폭 잡음
+    assert synth_level(np.zeros(1000, dtype=np.float32)) == 0.0
+    assert synth_level(np.array([], dtype=np.float32)) == 0.0
+    quiet = np.full(1000, 0.01, dtype=np.float32)
+    assert synth_level(quiet) < 0.05                        # 게이트에 걸림
+    loud = np.full(1000, 0.5, dtype=np.float32)
+    assert synth_level(loud) == 0.5
+    # int16 dtype (GPT-SoVITS 출력 형식)
+    i16 = np.full(1000, 16000, dtype=np.int16)
+    assert abs(synth_level(i16) - 16000/32767) < 1e-3
