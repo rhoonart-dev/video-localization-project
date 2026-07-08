@@ -138,7 +138,7 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
     top_p: 0.5
     temperature: 0.3
     retry_tries: 6                 # 환각(비정상 장발화) 시 재합성 횟수
-    pitch_match_tries: 5           # 후보 N개 중 원본 프로필(F0+밝기) 최근접 선택(1=끔)
+    pitch_match_tries: 3           # 후보 N개 중 원본 프로필(F0+밝기) 최근접(1=끔). 5는 세그당 ~10분으로 과함
   refbank:                         # 레퍼런스 음성 은행(자동 축적 + 영상별 최적 매칭)
     dir: outputs/ref_bank          # 클립 + 사이드카(.json) 저장 위치
     min_ref_dur: 3.0               # 은행 축적·레퍼런스 최소 길이(초, 자연 문장)
