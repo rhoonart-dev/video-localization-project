@@ -109,7 +109,7 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   dialogue_only: false             # true=실제 대사만 더빙, 씹는소리/감탄(리액션)은 원본 유지(ASMR용)
   speaker_wav: null                # xtts 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로
   asr_model: medium                # faster-whisper(영상→더빙 받아쓰기): base|small|medium (medium=인트로 등 누락↓)
-  bg_volume: 0.4                   # 더빙 믹스 시 배경 볼륨(ASMR 보존 ↑, 완전대체 0)
+  bg_volume: 1.0                   # 배경(보컬 제거된 BGM) 볼륨 — 원레벨 보존, 리미터가 피크 제어
   voice_volume: 1.1                # 더빙 보이스 볼륨(limiter 가 피크 제한)
   fit_to_timing: true              # 합성 음성을 자막 슬롯 길이에 맞게 time-stretch(싱크)
   max_speedup: 1.6                 # time-stretch 과도한 배속 방지 클램프(세그별 침범 캡과 병행)
@@ -117,7 +117,8 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   loudnorm: false                  # ASMR 다이내믹 보존 → EBU R128 정규화 끔
   limiter: true                    # 최종 믹스 피크만 제한(브릭월) → 합산 클리핑(째짐) 방지
   peak_limit: 0.97                 # 리미터 상한(0~1)
-  remove_original_vocals: false    # true 면 Demucs 로 원본 목소리 제거 후 더빙(ASMR/반주만 유지)
+  remove_original_vocals: true     # 원본 한국어 목소리 제거(Demucs) 후 더빙 — 안 끄면 한·일 음성 겹침
+                                   # (2026-07-08 실측: false 상태로 게시본에 한국어 잔존 — 사용자 검수 발견)
   demucs_model: htdemucs           # 보컬 분리 모델
   gptsovits:                       # 루피 음색 클로닝(GPT-SoVITS v2). 환경/모델 영구 위치.
     self_ref: true                 # 영상 자체 목소리를 레퍼런스로(음색 정확) — 실패 시 아래 은행 폴백
