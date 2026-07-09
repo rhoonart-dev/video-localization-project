@@ -558,18 +558,22 @@ def fix_leaked_korean(text: str, config: dict[str, Any]) -> str:
     한글 없으면 그대로. LLM 실패·여전히 한글 남으면 원문 유지(파이프라인 안 죽임)."""
     if not has_hangul(text):
         return text
-    try:
-        from engine.llm import complete
-        sys_p = ("다음 일본어 문장에 한국어 글자가 남아 있다. 한국어 부분만 문맥에 맞는 "
-                 "자연스러운 가타카나 발음 표기로 바꾸고 나머지는 그대로 둬라. "
-                 "설명 없이 교정된 일본어 문장 한 줄만 출력.")
-        out = complete(sys_p, text, config, max_tokens=256).strip().splitlines()[0].strip()
+    sys_p = ("다음 일본어 문장에 한국어 글자가 남아 있다. 한국어(한글) 부분을 하나도 남기지 말고 "
+             "전부 문맥에 맞는 자연스러운 가타카나 발음 표기로 바꿔라. 나머지는 그대로. "
+             "설명 없이 교정된 일본어 문장 한 줄만 출력.")
+    prev = text
+    for _ in range(2):                                  # LLM 비결정 → 재시도(한 번에 실패해도)
+        try:
+            from engine.llm import complete
+            out = complete(sys_p, prev, config, max_tokens=256).strip().splitlines()[0].strip()
+        except Exception as e:  # noqa: BLE001
+            log.warning("한글 잔존 교정 오류(%s) — 원문 유지", e)
+            return text
         if out and not has_hangul(out):
             log.info("한글 잔존 교정: %r → %r", text, out)
             return out
-        log.warning("한글 잔존 교정 실패(여전히 한글) — 원문 유지: %r", text)
-    except Exception as e:  # noqa: BLE001
-        log.warning("한글 잔존 교정 오류(%s) — 원문 유지", e)
+        prev = out or prev
+    log.warning("한글 잔존 교정 2회 실패(여전히 한글) — 원문 유지: %r", text)
     return text
 
 
