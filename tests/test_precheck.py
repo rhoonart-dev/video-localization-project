@@ -39,9 +39,13 @@ def test_solid_hit_frames_filters_ocr_noise():
     assert solid_hit_frames(frames2, min_conf=0.75, min_hangul=2) == 2
 
 
-def test_decide_route_burn_in_wins():
-    # 번인 자막 실측 → B (대사 있어도 캡션 교체가 우선 — Level B 파이프라인)
-    assert decide_route(burn_frames=3, dialogue_segs=2, min_persist=2) == "B"
+def test_decide_route_burn_plus_dialogue_is_bc():
+    # 번인+대사(먹방류) → BC: 캡션 제거(인페인트) + 더빙 (2026-07-09 이중자막 사고로 신설)
+    assert decide_route(burn_frames=3, dialogue_segs=2, min_persist=2) == "BC"
+
+
+def test_decide_route_burn_only_is_b():
+    assert decide_route(burn_frames=3, dialogue_segs=0, min_persist=2) == "B"
 
 
 def test_decide_route_dialogue_no_burn_is_dub():

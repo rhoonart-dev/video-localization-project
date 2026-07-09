@@ -70,15 +70,17 @@ def process_video(video: str, video_id: str, level: str, config: dict[str, Any],
         inpainted_dir = frames_dir  # 자막 모드: 화면 텍스트 제거 안 함
         log.info("Level %s: 인페인팅 생략(자막 모드)", level)
 
-    # [4] 번역(초벌)
-    tdoc = translate_mod.translate(str(work / "detections.json"), config,
-                                   hero=hero, use_deepl=use_deepl)
-
-    # [5] 재렌더 / 자막
+    # [4] 번역(초벌) / [5] 재렌더 — clean 모드는 둘 다 생략(캡션 제거만, 더빙이 자막 담당)
     render_mode = opts.get("render_mode", "subtitle")
-    render_out = render_mod.render(
-        str(work / "detections.json"), str(work / "translations.json"), config,
-        mode=render_mode, inpainted_dir=str(inpainted_dir) if render_mode == "replace" else None)
+    if render_mode == "clean":
+        render_out = {}
+        log.info("clean 모드: 텍스트 재렌더·번역 생략 — 캡션 제거 프레임 그대로(BC: 더빙이 뒤따름)")
+    else:
+        translate_mod.translate(str(work / "detections.json"), config,
+                                hero=hero, use_deepl=use_deepl)
+        render_out = render_mod.render(
+            str(work / "detections.json"), str(work / "translations.json"), config,
+            mode=render_mode, inpainted_dir=str(inpainted_dir) if render_mode == "replace" else None)
 
     # [6] 재조립: (무손실 FFV1 중간본 → 최종 인코딩) + 오디오 merge
     final = _reassemble(config, work, fps, render_mode, render_out, inpainted_dir,
@@ -107,7 +109,7 @@ def _reassemble(config, work: Path, fps: float, render_mode: str, render_out: di
                 inpainted_dir, frames_dir, audio, src_video) -> Path:
     """프레임 → 무손실 중간본 → 최종 인코딩 + 오디오 merge."""
     enc = config.get("encode", {})
-    if render_mode == "replace":
+    if render_mode in ("replace", "clean"):     # clean = 캡션 제거 프레임 그대로 조립
         src_frames = render_out.get("frames", str(inpainted_dir))
         intermediate = common.frames_to_video(
             src_frames, work / "intermediate.mkv", fps,

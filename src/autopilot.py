@@ -73,7 +73,8 @@ def qa_verdict(summary: dict[str, Any], gate: dict[str, Any]) -> tuple[str, str]
 def final_video_for(route: str, base: pathlib.Path) -> Optional[pathlib.Path]:
     """라우트별 최종 산출 영상. A(무변환)는 None — 원본을 그대로 쓴다."""
     names = {"B": ["final_draft.mp4"],
-             "C": ["final_dubbed_subbed.mp4", "final_dubbed.mp4"]}.get(route, [])
+             "C": ["final_dubbed_subbed.mp4", "final_dubbed.mp4"],
+             "BC": ["final_dubbed_subbed.mp4", "final_dubbed.mp4"]}.get(route, [])
     for n in names:
         if (base / n).exists():
             return base / n
@@ -85,7 +86,7 @@ def build_upload_text(meta: dict[str, Any], row: dict[str, Any], route: str,
     """upload_package/UPLOAD.md — 사람이 YouTube Studio 에서 복붙·체크할 전부."""
     lines = [f"# 업로드 패키지 — {row.get('video_id')}", "",
              f"- 원본: {row.get('title')} ({row.get('url')})",
-             f"- 처리 라우트: {route} — autopilot 실측 라우팅(B=화면자막 교체 / C=음성 더빙 / "
+             f"- 처리 라우트: {route} — autopilot 실측 라우팅(B=캡션 교체 / C=더빙 / BC=캡션제거+더빙 / "
              f"A=무변환·메타만). ⚠ README 의 Level A/B/C(process_video 축)와 다른 축이니 "
              f"수동 재처리 시 `src.process_video --level` 로 혼용 금지",
              f"- QA: {qa_note}", "",
@@ -360,6 +361,13 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                                   inpaint_backend=ap.get("inpaint_backend", "opencv"))
                 elif route == "C":
                     _run_dub(video, vid, config, config_path)
+                elif route == "BC":
+                    # 먹방류: 캡션 제거(clean) 후, 제거된 영상 위에 더빙+일본어 자막
+                    from src.process_video import process_video
+                    process_video(str(video), vid, "BC", config,
+                                  content_type=ap.get("content_type", "anime"),
+                                  inpaint_backend=ap.get("inpaint_backend", "opencv"))
+                    _run_dub(base / "final_draft.mp4", vid, config, config_path)
                 # route A: 영상 무변환 — 메타데이터만
 
                 # 메타데이터: 제목만 주면 LLM 이 내용을 지어낸다(E2E 실측) →
@@ -367,7 +375,7 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                 from src.metadata import generate
                 generate(vid, r.get("title") or "", _content_context(base, pre), config)
                 summary = {"frames": 0}
-                if route == "B":                      # QA 는 인페인트 비교가 있는 B 만 의미
+                if route in ("B", "BC"):              # QA 는 인페인트 비교가 있는 라우트만 의미
                     try:
                         summary = read_json(base / "qa_result.json")
                     except Exception:                 # 부재·손상 → 측정 없음 폴백

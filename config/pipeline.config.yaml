@@ -33,6 +33,11 @@ levels:
     render_mode: replace
     inpaint_mode: auto
     dub: true                      # 게이트 통과 후에만 src/dub.py 호출
+  BC:                              # 번인 캡션 + 대사(먹방류): 캡션 제거 후 더빙
+    inpaint: true
+    render_mode: clean             # 텍스트 재렌더 없음 — 더빙(burn_dub_subtitle)이 자막 담당
+    inpaint_mode: auto
+    dub: true
 
 detect:
   ocr_backend: paddleocr           # 한국어 소스 → paddleocr 권장(한글 인식 우수). rapidocr=경량 폴백

@@ -80,3 +80,12 @@ def test_build_upload_text_contents():
     assert "defaultAudioLanguage=ja" in txt       # 업로드 시 설정 항목
     assert "madeForKids" in txt                   # 정책 미결정 리마인더
     assert "19:00 JST" in txt                     # 예약 권장 시간
+
+
+def test_final_video_for_bc_route():
+    # BC(캡션제거+더빙) 최종본 = 더빙 산출물
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        assert final_video_for("BC", base) is None
+        (base / "final_dubbed_subbed.mp4").write_bytes(b"x")
+        assert final_video_for("BC", base).name == "final_dubbed_subbed.mp4"

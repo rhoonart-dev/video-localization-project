@@ -47,9 +47,12 @@ def solid_hit_frames(frames: list[dict[str, Any]], min_conf: float, min_hangul: 
 
 
 def decide_route(burn_frames: int, dialogue_segs: int, min_persist: int) -> str:
-    """실측 → 레벨. 번인(지속 프레임 min_persist 이상)=B, 대사만=C(더빙), 없으면 A."""
+    """실측 → 라우트. 번인+대사=BC(캡션 제거+더빙), 번인만=B, 대사만=C(더빙), 없으면 A.
+
+    BC 는 먹방류(화면 캡션 + 나레이션) 대응 — B 만 돌리면 더빙이 없고, C 만 돌리면
+    한국어 캡션 위에 일본어 자막이 겹친다(2026-07-09 데모 이중자막 사고)."""
     if burn_frames >= min_persist:
-        return "B"
+        return "BC" if dialogue_segs >= 1 else "B"
     if dialogue_segs >= 1:
         return "C"
     return "A"
