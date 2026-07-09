@@ -317,3 +317,45 @@ def test_expected_synth_dur():
     assert expected_synth_dur("") == 1.0                       # 하한
     d = expected_synth_dur("あいうえおかきくけこ")            # 10자
     assert 1.0 < d < 2.5
+
+
+def test_pacing_plan_natural_within_cap_no_stretch():
+    # 원본 보컬 제거 더빙 = 입싱크 불필요 → cap(다음 대사 침범선) 안이면 자연 속도.
+    from src.dub import pacing_plan
+    speed, out = pacing_plan(natural=1.9, cap=3.5, max_speedup=1.35)
+    assert speed == 1.0 and out == 1.9                  # 슬롯보다 길어도 그대로
+    speed, out = pacing_plan(natural=3.3, cap=3.2, max_speedup=1.35)
+    assert 1.0 < speed <= 1.35 and abs(out - 3.2) < 1e-9
+
+
+def test_pacing_plan_overflow_clamped_then_truncate():
+    from src.dub import pacing_plan
+    # cap 대비 크게 초과 → max_speedup 클램프(잘림은 _fit_audio 캡이 처리)
+    speed, out = pacing_plan(natural=12.0, cap=7.3, max_speedup=1.35)
+    assert speed == 1.35 and abs(out - 12.0 / 1.35) < 1e-6
+    # 경계/무효 입력
+    assert pacing_plan(0, 5, 1.35) == (1.0, 0)
+    assert pacing_plan(5, 0, 1.35) == (1.0, 5)
+
+
+def test_char_budget_for_dub_translation():
+    from src.dub import char_budget
+    # 슬롯 초수 × 발화속도(자/초) — 최소 하한 보장
+    assert char_budget(7.3, 5.5) == 40
+    assert char_budget(0.5, 5.5) == 8                    # 짧아도 최소 8자
+    assert char_budget(2.7, 5.5) == 14
+
+
+def test_retime_events_to_actual_durations():
+    from src.dub import retime_events
+    events = [{"start": 0.0, "end": 7.3, "text": "a"},
+              {"start": 7.3, "end": 10.0, "text": "b"},
+              {"start": 10.0, "end": 11.3, "text": "c"}]
+    # 실제 발화 길이(자연 속도) — c 는 다음 세그 없음 → 그대로 연장
+    out = retime_events(events, durs=[6.0, 2.0, 1.9], guard=0.05)
+    assert out[0]["end"] == 6.0                          # 짧아진 발화 → 자막도 축소
+    assert out[1]["end"] == 9.3                          # 7.3+2.0
+    assert abs(out[2]["end"] - 11.9) < 1e-9              # 마지막은 자유 연장
+    # 다음 세그 시작을 넘으면 guard 만큼 앞에서 클램프
+    out2 = retime_events(events, durs=[8.0, 2.0, 1.0], guard=0.05)
+    assert abs(out2[0]["end"] - (7.3 - 0.05)) < 1e-9

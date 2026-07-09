@@ -39,15 +39,22 @@ def build_system_prompt(persona: str, glossary: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
-def build_user_prompt(texts: list[str], drafts: Optional[dict[str, str]] = None) -> str:
+def build_user_prompt(texts: list[str], drafts: Optional[dict[str, str]] = None,
+                      char_budgets: Optional[list[int]] = None) -> str:
     lines = [
         "次の韓国語テキストを日本語にトランスクリエーションせよ。",
         '出力は JSON 配列のみ。各要素 {"source","target","notes","flagged"}。',
-        "flagged は文脈不足・固有名詞不確実など人手確認が要る場合 true。\n",
+        "flagged は文脈不足・固有名詞不確実など人手確認が要る場合 true。",
     ]
+    if char_budgets:   # 더빙용: 슬롯 초수 기반 길이 예산 — 초과하면 말이 빨라진다
+        lines.append("これは吹き替え用。各行の日本語は指定の文字数以内で、"
+                     "話し言葉として自然に短くまとめよ(内容の要点は保持)。")
+    lines.append("")
     for i, t in enumerate(texts):
         d = f"  (DeepL下訳: {drafts[t]})" if drafts and t in drafts else ""
-        lines.append(f"{i + 1}. {t}{d}")
+        b = (f"  [≤{char_budgets[i]}文字]"
+             if char_budgets and i < len(char_budgets) else "")
+        lines.append(f"{i + 1}. {t}{d}{b}")
     return "\n".join(lines)
 
 
@@ -97,7 +104,8 @@ def deepl_draft(texts: list[str], config: dict[str, Any]) -> dict[str, str]:
 
 # ── LLM 트랜스크리에이션 ─────────────────────────────────────────────────
 def transcreate(texts: list[str], config: dict[str, Any], hero: bool = False,
-                use_deepl: bool = False) -> list[TranslationEntry]:
+                use_deepl: bool = False,
+                char_budgets: Optional[list[int]] = None) -> list[TranslationEntry]:
     if not texts:
         return []
     persona = load_persona(config)
@@ -108,7 +116,7 @@ def transcreate(texts: list[str], config: dict[str, Any], hero: bool = False,
 
     drafts = deepl_draft(texts, config) if use_deepl else None
     system = build_system_prompt(persona, glossary)
-    user = build_user_prompt(texts, drafts)
+    user = build_user_prompt(texts, drafts, char_budgets=char_budgets)
 
     log.info("트랜스크리에이션 provider=%s model=%s 텍스트=%d hero=%s deepl=%s",
              llm.provider(config), model, len(texts), hero, use_deepl)

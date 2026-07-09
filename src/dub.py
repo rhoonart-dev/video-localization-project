@@ -99,6 +99,40 @@ def _fit_speed(dur: float, target: float, max_speedup: float = 1.6,
     return min(speed, max_speedup) if speed > 1 else max(speed, min_slowdown)
 
 
+def pacing_plan(natural: float, cap: float, max_speedup: float = 1.35) -> tuple[float, float]:
+    """자연 속도 우선 페이싱 — (배속, 결과 길이).
+
+    원본 보컬을 제거하는 더빙은 입싱크가 필요 없다 → 자막 슬롯에 억지로 압축하지 않고
+    (실측 1.68x 배속 = '말이 빠르다' 피드백, 2026-07-09), 다음 대사 침범선(cap)만 지킨다.
+    cap 안이면 그대로(1.0x), 넘으면 max_speedup 까지만 압축(잔여는 _fit_audio 캡이 페이드 컷)."""
+    if natural <= 0 or cap <= 0:
+        return 1.0, max(natural, 0.0)
+    if natural <= cap:
+        return 1.0, natural
+    return min(natural / cap, max_speedup), natural / min(natural / cap, max_speedup)
+
+
+def char_budget(slot_sec: float, chars_per_sec: float = 5.5, min_chars: int = 8) -> int:
+    """더빙용 번역 길이 예산(문자 수) — 원본 슬롯 초수 × 합성 발화 속도.
+
+    번역이 슬롯 대비 길면 어떤 페이싱으로도 빨라진다(근본 원인) → 번역 단계에서 제한."""
+    return max(min_chars, int(slot_sec * chars_per_sec))
+
+
+def retime_events(events: list[dict[str, Any]], durs: list[float],
+                  guard: float = 0.05) -> list[dict[str, Any]]:
+    """자막 이벤트 끝시각을 '실제 더빙 길이'에 맞춤(자연 페이싱과 자막 일치).
+
+    다음 세그 시작 - guard 를 넘지 않게 클램프. 마지막 세그는 자유 연장."""
+    out = []
+    for i, e in enumerate(events):
+        end = e["start"] + (durs[i] if i < len(durs) and durs[i] > 0 else (e["end"] - e["start"]))
+        if i + 1 < len(events):
+            end = min(end, events[i + 1]["start"] - guard)
+        out.append({**e, "end": round(end, 3)})
+    return out
+
+
 def _needs_truncate(dur: float, max_len: Optional[float]) -> bool:
     """배속 후에도 슬롯(다음 세그 시작)을 넘으면 잘라야 한다(드론/겹침 방지)."""
     return max_len is not None and dur > max_len + 0.05
@@ -468,22 +502,30 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
     log.warning("Level C 더빙 초안 생성(backend=%s). hero/리텐션 리스크는 사람 검토 필수.", backend)
 
     fit = config.get("dub", {}).get("fit_to_timing", True)
-    max_sp = float(config.get("dub", {}).get("max_speedup", 1.6))
+    max_sp = float(config.get("dub", {}).get("max_speedup", 1.35))
     caps = segment_hard_caps([(s.get("start", 0.0), s.get("end", 0.0)) for s in segments])
     seg_files: list[tuple[float, Path]] = []
+    actual_durs: list[float] = []                     # 세그별 실제 길이(자막 retime 용)
     for i, seg in enumerate(segments):
         data = synthesize_segment(seg["text"], config, voice_id=voice_id, speaker_wav=speaker_wav)
         if not data:                                  # 지문/빈 텍스트 → 더빙 스킵(드론 방지)
             log.info("세그 %d 스킵(합성 없음): %r", i, seg["text"])
+            actual_durs.append(0.0)
             continue
         fp = seg_dir / f"seg_{i:04d}{ext}"
-        slot = seg.get("end", 0) - seg.get("start", 0)
-        if fit and slot > 0:                          # 슬롯 길이에 맞게 time-stretch(싱크) + 침범 캡
+        if fit:
+            # 자연 속도 우선: 슬롯이 아니라 cap(다음 대사 침범선) 기준 — '말 빠름' 해결.
             raw = seg_dir / f"seg_{i:04d}_raw{ext}"
             raw.write_bytes(data)
-            _fit_audio(raw, fp, slot, max_speedup=max_sp, max_len=caps[i])
+            natural = common.probe(raw).get("duration", 0.0)
+            speed, _ = pacing_plan(natural, caps[i], max_speedup=max_sp)
+            target = (natural / speed) if speed > 1.0 else natural
+            _fit_audio(raw, fp, target, max_speedup=max_sp, max_len=caps[i])
+            if speed > 1.0:
+                log.info("세그 %d 페이싱: 자연 %.1fs > cap %.1fs → %.2fx", i, natural, caps[i], speed)
         else:
             fp.write_bytes(data)
+        actual_durs.append(common.probe(fp).get("duration", 0.0))
         seg_files.append((seg["start"], fp))
 
     draft = base / "dub_ja_draft.wav"
@@ -498,7 +540,8 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
     write_json(build_alignment_report(video_id, segments, voice_ref),
                base / "alignment_report.json")
     log.info("더빙 초안(검토 전): %s (세그먼트 %d, backend=%s)", draft, len(segments), backend)
-    return {"draft": str(draft), "segments": len(segments), "backend": backend}
+    return {"draft": str(draft), "segments": len(segments), "backend": backend,
+            "actual_durs": actual_durs}
 
 
 # ── 영상→더빙 (ASR → 번역 → 합성 → 믹스) ─────────────────────────────────
@@ -762,7 +805,12 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
             raise ValueError("dialogue_only 필터 결과 대사 0개. asr_model 또는 필터 확인.")
     log.info("ASR 대사 %d개 받아쓰기 완료 → 트랜스크리에이션", len(segs))
 
-    entries = transcreate([s["text"] for s in segs], config)   # 한국어→일본어(LLM, persona)
+    # 더빙용 길이 예산: 번역이 슬롯 대비 길면 어떤 페이싱으로도 말이 빨라진다(근본 원인)
+    # → 원문 슬롯 초수 × 합성 발화속도(자/초)로 문자 예산을 걸어 간결한 번역 유도.
+    cps = float(config.get("dub", {}).get("dub_chars_per_sec", 5.5))
+    budgets = [char_budget(s["end"] - s["start"], cps) for s in segs]
+    entries = transcreate([s["text"] for s in segs], config,   # 한국어→일본어(LLM, persona)
+                          char_budgets=budgets)
     # 한글 잔존 교정 + 괄호 지문 제거: LLM 이 고유명사(마라엽'떡')를 한글로 남기거나
     # 지문(（もぐもぐ）)을 넣으면 더빙이 억지 발음해 뭉개짐 → 가타카나 변환 + 지문 제거.
     jmap = {e.source: strip_stage_directions(fix_leaked_korean(e.target, config)) for e in entries}
@@ -833,6 +881,13 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),
                       encoding="utf-8")
     res = dub(video_id, str(ja_srt), level, config, speaker_wav=speaker_wav)
+
+    # 자연 페이싱으로 발화 길이가 슬롯과 달라짐 → 자막 끝시각을 실제 더빙 길이에 재정렬.
+    durs = res.get("actual_durs") or []
+    if durs:
+        events = retime_events(events, durs)
+        ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),
+                          encoding="utf-8")
 
     if mux:
         dconf = config.get("dub", {})
