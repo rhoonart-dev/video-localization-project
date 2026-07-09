@@ -327,32 +327,27 @@ def _synthesize_gptsovits(text: str, lang: str, config: dict[str, Any]) -> bytes
 
     import soundfile as sf
 
+    import numpy as np
+
+    from src.refbank import profile_distance, spectral_centroid  # lazy(순환 import 회피)
+
     g = config.get("dub", {}).get("gptsovits", {})
     h = _gptsovits_handle(config)
     iw = h["iw"]
     aux = [SimpleNamespace(name=str(resolve_path(p))) for p in g.get("aux_refs", [])]
 
-    def _one():
-        res = iw.get_tts_wav(
-            ref_wav_path=str(resolve_path(g["ref_wav"])),
-            prompt_text=g["prompt_text"],
-            prompt_language=h["lang"][g.get("prompt_lang", "ko")],
-            text=text, text_language=h["lang"].get(lang, h["lang"]["ja"]),
-            top_k=int(g.get("top_k", 20)), top_p=float(g.get("top_p", 0.6)),
-            temperature=float(g.get("temperature", 0.6)), inp_refs=(aux or None))
-        sr, audio = list(res)[-1]
-        return sr, audio
+    clean = strip_stage_directions(text)
+    if not clean:                                           # 순수 지문(（もぐもぐ）) → 스킵
+        log.info("합성 스킵(지문/빈 텍스트): %r", text)
+        return b""
 
     max_dur = float(g.get("max_synth_dur", 12.0))
     tries = int(g.get("retry_tries", 6))
     pitch_tries = int(g.get("pitch_match_tries", 3))
     min_level = float(g.get("min_synth_level", 0.05))
-    from src.refbank import profile_distance, spectral_centroid  # lazy(순환 import 회피)
+    max_chars = int(g.get("synth_max_chars", 24))
 
     # 매칭 목표 프로필 = target_profile(F0+밝기, 이 영상 원본) > target_f0 > ref.
-    # 합성은 회차별 F0·밝기 편차가 큼 → 후보 N개 중 '원본 목소리 프로필'에 가장 가까운 것 선택.
-    # 은행 ref 는 음색용이라 피치가 영상과 다를 수 있어(커몬2: ref 492 vs 원본 405),
-    # 밝기만이 아니라 F0 도 반드시 '원본'을 목표로 해야 한다.
     target_prof = g.get("target_profile")
     goal_f0 = float(g.get("target_f0", 0) or 0)
     if not target_prof and goal_f0 <= 0 and pitch_tries > 1:
@@ -362,43 +357,57 @@ def _synthesize_gptsovits(text: str, lang: str, config: dict[str, Any]) -> bytes
         except Exception:
             goal_f0 = 0.0
     if not target_prof and goal_f0 > 0:
-        target_prof = {"f0": goal_f0, "centroid": 0.0}      # F0 만 알면 F0 만 매칭
+        target_prof = {"f0": goal_f0, "centroid": 0.0}
 
     def _cand_dist(sr, audio):
         cf0 = f0_median(audio, sr)
-        if target_prof.get("centroid", 0) > 0:              # 밝기까지 알면 전체 프로필
+        if target_prof.get("centroid", 0) > 0:
             return profile_distance({"f0": cf0, "centroid": spectral_centroid(audio, sr)},
                                     target_prof, brightness_weight=0.7)
-        return pitch_distance_octaves(cf0, target_prof["f0"])  # F0 만
+        return pitch_distance_octaves(cf0, target_prof["f0"])
 
-    if target_prof and pitch_tries > 1:
-        # '사실상 무음' 후보(synth_level < min_level)는 프로필과 무관하게 기각 —
-        # 무음이 선택되면 이후 정규화가 잡음을 증폭한다(2026-07-08 커몬2 실측).
+    def _synth_chunk(chunk: str):
+        """짧은 청크 1개 합성 — 프로필 매칭 + 할루시네이션(과장 길이) 기각."""
+        def _one():
+            res = iw.get_tts_wav(
+                ref_wav_path=str(resolve_path(g["ref_wav"])), prompt_text=g["prompt_text"],
+                prompt_language=h["lang"][g.get("prompt_lang", "ko")],
+                text=chunk, text_language=h["lang"].get(lang, h["lang"]["ja"]),
+                top_k=int(g.get("top_k", 20)), top_p=float(g.get("top_p", 0.6)),
+                temperature=float(g.get("temperature", 0.6)), inp_refs=(aux or None))
+            sr, audio = list(res)[-1]
+            return sr, audio
+        cap = min(max_dur, max(expected_synth_dur(chunk) * 3.0, 4.0))   # 길이 대비 상한
         best, best_dist = None, float("inf")
-        for i in range(max(1, pitch_tries)):
-            sr, audio = synthesize_with_retry(_one, max_dur=max_dur, tries=tries)
-            lvl = synth_level(audio)
-            if lvl < min_level:
-                log.warning("무음성 합성 후보 기각(level=%.3f < %.2f) — 재시도", lvl, min_level)
+        for _ in range(max(1, pitch_tries)):
+            sr, audio = synthesize_with_retry(_one, max_dur=cap, tries=tries)
+            if synth_level(audio) < min_level:
                 continue
-            dist = _cand_dist(sr, audio)
+            over = (len(audio) / sr) > cap                  # 상한 초과 = 할루시네이션 의심
+            dist = (_cand_dist(sr, audio) if target_prof else 0.0) + (10.0 if over else 0.0)
             if dist < best_dist:
                 best, best_dist = (sr, audio), dist
             if best_dist <= 0.15:
                 break
         if best is None:
-            raise RuntimeError(
-                f"합성 {pitch_tries}회 전부 무음성(level<{min_level}) — "
-                "레퍼런스/모델 상태 확인 필요(쓰레기 게시 방지 위해 실패 처리)")
-        sr, audio = best
-        log.info("프로필 매칭: 목표 f0=%.0f centroid=%.0f, 선택 거리=%.2f (%d회)",
-                 target_prof.get("f0", 0), target_prof.get("centroid", 0), best_dist, i + 1)
-    else:
-        sr, audio = synthesize_with_retry(_one, max_dur=max_dur, tries=tries)
-        if synth_level(audio) < min_level:
-            raise RuntimeError(f"무음성 합성(level<{min_level}) — 쓰레기 게시 방지 위해 실패 처리")
+            raise RuntimeError(f"청크 합성 전부 무음성: {chunk!r}")
+        if best_dist >= 10.0:
+            log.warning("청크 할루시네이션 의심(길이 초과) 채택 — 텍스트: %r", chunk)
+        return best
+
+    chunks = split_for_synth(clean, max_chars)
+    sr_out, pieces = None, []
+    for ch in chunks:
+        sr, audio = _synth_chunk(ch)
+        sr_out = sr
+        if pieces:                                          # 청크 간 짧은 간격
+            pieces.append(np.zeros(int(sr * 0.08), dtype=np.asarray(audio).dtype))
+        pieces.append(np.asarray(audio))
+    audio = np.concatenate(pieces) if len(pieces) > 1 else pieces[0]
+    log.info("합성: %d청크 → %.1fs (텍스트 %d자, 프로필매칭%s)",
+             len(chunks), len(audio) / sr_out, len(clean), " on" if target_prof else " off")
     out = tempfile.mktemp(suffix=".wav")
-    sf.write(out, audio, sr)
+    sf.write(out, audio, sr_out)
     return Path(out).read_bytes()
 
 
@@ -464,6 +473,9 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
     seg_files: list[tuple[float, Path]] = []
     for i, seg in enumerate(segments):
         data = synthesize_segment(seg["text"], config, voice_id=voice_id, speaker_wav=speaker_wav)
+        if not data:                                  # 지문/빈 텍스트 → 더빙 스킵(드론 방지)
+            log.info("세그 %d 스킵(합성 없음): %r", i, seg["text"])
+            continue
         fp = seg_dir / f"seg_{i:04d}{ext}"
         slot = seg.get("end", 0) - seg.get("start", 0)
         if fit and slot > 0:                          # 슬롯 길이에 맞게 time-stretch(싱크) + 침범 캡
@@ -491,10 +503,53 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
 
 # ── 영상→더빙 (ASR → 번역 → 합성 → 믹스) ─────────────────────────────────
 _HANGUL_RE = re.compile(r"[가-힣]")
+_STAGE_RE = re.compile(r"[（(【\[][^）)】\]]*[）)】\]]")   # 괄호 지문(（もぐもぐ）등)
 
 
 def has_hangul(text: str) -> bool:
     return bool(_HANGUL_RE.search(text or ""))
+
+
+def strip_stage_directions(text: str) -> str:
+    """괄호 지문 제거 — 「（もぐもぐ！）」류는 발화가 아니라 지문이라 더빙하면 드론이 된다."""
+    out = _STAGE_RE.sub("", text or "")
+    return re.sub(r"\s+", " ", out).strip(" 、。・").strip()
+
+
+def split_for_synth(text: str, max_chars: int = 24) -> list[str]:
+    """긴 문장을 구두점(、。！？) 단위로 ≤max_chars 청크 분할 — GPT-SoVITS 는 짧은 발화가 안정적
+    (긴 특이 가타카나 나열은 60초 할루시네이션 유발, 2026-07-08 실측)."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    parts = re.split(r"(?<=[、。！？!?])", text)
+    chunks: list[str] = []
+    cur = ""
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        if cur and len(cur) + len(p) > max_chars:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = (cur + p) if not cur else (cur + p)
+    if cur:
+        chunks.append(cur)
+    # 여전히 max_chars 크게 초과하는 단일 청크(구두점 없는 긴 나열)는 강제 분할
+    out: list[str] = []
+    for c in chunks:
+        while len(c) > max_chars * 1.6:
+            out.append(c[:max_chars])
+            c = c[max_chars:]
+        out.append(c)
+    return out
+
+
+def expected_synth_dur(text: str, per_char: float = 0.16) -> float:
+    """텍스트 길이로 추정한 정상 합성 길이(초) — 할루시네이션(과장 길이) 판정 기준."""
+    n = len(re.sub(r"\s", "", text or ""))
+    return max(1.0, n * per_char)
 
 
 def fix_leaked_korean(text: str, config: dict[str, Any]) -> str:
@@ -704,10 +759,11 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     log.info("ASR 대사 %d개 받아쓰기 완료 → 트랜스크리에이션", len(segs))
 
     entries = transcreate([s["text"] for s in segs], config)   # 한국어→일본어(LLM, persona)
-    # 한글 잔존 교정: LLM 이 고유명사(예: 마라엽'떡')를 한글로 남기면 더빙이 그걸 억지로
-    # 발음해 뭉개진다(2026-07-08 실측 "떡") → 가타카나로 자동 변환해 단어 명료도 확보.
-    jmap = {e.source: fix_leaked_korean(e.target, config) for e in entries}
+    # 한글 잔존 교정 + 괄호 지문 제거: LLM 이 고유명사(마라엽'떡')를 한글로 남기거나
+    # 지문(（もぐもぐ）)을 넣으면 더빙이 억지 발음해 뭉개짐 → 가타카나 변환 + 지문 제거.
+    jmap = {e.source: strip_stage_directions(fix_leaked_korean(e.target, config)) for e in entries}
     events = [{"start": s["start"], "end": s["end"], "text": jmap.get(s["text"], "")} for s in segs]
+    events = [e for e in events if e["text"].strip()]   # 지문만이던 세그(요음!→（もぐもぐ）) 제거
 
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
 

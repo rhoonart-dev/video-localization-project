@@ -289,3 +289,31 @@ def test_fix_leaked_korean_noop_without_hangul():
     # 한글 없으면 LLM 호출 없이 그대로(순수 경로) — 네트워크 의존 없음.
     from src.dub import fix_leaked_korean
     assert fix_leaked_korean("おいしくいただきます", {}) == "おいしくいただきます"
+
+
+def test_strip_stage_directions():
+    from src.dub import strip_stage_directions
+    assert strip_stage_directions("それでは（もぐもぐ！）食べます") == "それでは食べます"
+    assert strip_stage_directions("（もぐもぐ！）") == ""          # 순수 지문 → 빈 문자열(스킵)
+    assert strip_stage_directions("マーラーヨプトック（ヨプキトッポッキ）") == "マーラーヨプトック"
+    assert strip_stage_directions("普通の文") == "普通の文"
+
+
+def test_split_for_synth():
+    from src.dub import split_for_synth
+    # 짧으면 그대로 1청크
+    assert split_for_synth("おいしい！", 24) == ["おいしい！"]
+    # 긴 문장은 구두점 단위로 쪼갬
+    long = "マーラーヨプトック、ヨプキタッパル、ロゼマーラーシャングオ、クリームエビ、そしてチキンまで準備しました！"
+    chunks = split_for_synth(long, 24)
+    assert len(chunks) >= 2
+    assert all(len(c) <= 24 * 1.6 for c in chunks)             # 강제분할 상한
+    assert "".join(chunks).replace("　","") != ""              # 내용 보존
+    assert split_for_synth("", 24) == []
+
+
+def test_expected_synth_dur():
+    from src.dub import expected_synth_dur
+    assert expected_synth_dur("") == 1.0                       # 하한
+    d = expected_synth_dur("あいうえおかきくけこ")            # 10자
+    assert 1.0 < d < 2.5
