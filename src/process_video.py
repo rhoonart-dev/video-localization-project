@@ -128,7 +128,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="영상 1편 현지화 처리(초벌까지). 자동 게시 금지.")
     p.add_argument("--video", required=True)
     p.add_argument("--video-id", required=True)
-    p.add_argument("--level", default="A", choices=["A", "B", "C"])
+    p.add_argument("--level", default="B")   # 검증은 config.levels 기반(_level_opts) — BC 등 확장 라우트 허용
     p.add_argument("--content-type", default=None, help="mukbang|anime|high_motion (인페인트 모드 선택)")
     p.add_argument("--subtitle-area", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"))
     p.add_argument("--backend", default=None, help="인페인트 백엔드 강제(opencv|lama|sttn|propainter)")
