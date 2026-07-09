@@ -49,6 +49,11 @@ def build_user_prompt(texts: list[str], drafts: Optional[dict[str, str]] = None,
     if char_budgets:   # 더빙용: 슬롯 초수 기반 길이 예산 — 초과하면 말이 빨라진다
         lines.append("これは吹き替え用。各行の日本語は指定の文字数以内で、"
                      "話し言葉として自然に短くまとめよ(内容の要点は保持)。")
+        # 긴 가타카나 복합어 나열은 TTS 가 가장 못 읽는 형태(2026-07-09 실측:
+        # 'マーラータントッポッキにタッパル…' 발음 붕괴) → 자연 문장 흐름 강제.
+        lines.append("料理名・固有名詞: 長いカタカナ複合語(8文字超)や名詞の羅列は避け、"
+                     "日本の視聴者に通じる短く自然な言い方に意訳せよ(要素の省略可)。"
+                     "名詞を詰め込まず、助詞・動詞のある話し言葉の文にすること。")
     lines.append("")
     for i, t in enumerate(texts):
         d = f"  (DeepL下訳: {drafts[t]})" if drafts and t in drafts else ""
