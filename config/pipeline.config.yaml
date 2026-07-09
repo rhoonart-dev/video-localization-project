@@ -141,9 +141,9 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
     prompt_lang: ko                # 레퍼런스(루피) 음성 언어
     aux_refs:                      # 멀티레퍼런스(동일 화자 → 음색 안정)
       - outputs/ref_bank/loopy_adobe2.wav
-    top_k: 5                       # 낮게 = 텍스트·레퍼런스 충실(2026-07-02 피치 일치 실측값)
-    top_p: 0.5
-    temperature: 0.3
+    top_k: 20                      # GPT-SoVITS 기본값 — 낮추면(5) 반복루프 할루시네이션(2026-07-08 실측)
+    top_p: 1.0                     # 피치 안정은 낮은 temp 아니라 pitch_match_tries 후보선택이 담당
+    temperature: 1.0
     retry_tries: 6                 # 환각(비정상 장발화) 시 재합성 횟수
     pitch_match_tries: 3           # 후보 N개 중 원본 프로필(F0+밝기) 최근접(1=끔). 5는 세그당 ~10분으로 과함
     synth_max_chars: 24            # 이 길이 넘는 문장은 구두점 단위 청크 합성(긴 나열 할루시네이션 방지)
