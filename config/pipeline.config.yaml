@@ -102,7 +102,8 @@ upload:
 dub:                               # Level C 한정. 게이트 통과 후에만.
   tts_backend: gptsovits           # gptsovits(루피 음색 크로스링구얼 클로닝, 권장) | xtts | elevenlabs
   language: ja                     # 기본 합성 언어(세그별 영어 대사는 자동 감지해 en 유지)
-  asr_vad_filter: true             # ASR VAD(배경음악 큰 영상은 false 로 꺼야 대사 잡힘)
+  asr_vad_filter: false            # VAD 는 짧은 발화 드롭+타이밍뭉갬(2026-07-08 '요음!' 누락) → off.
+                                   # 음악 오검출은 아래 할루시네이션 필터가 차단(no_speech/logprob)
   asr_max_no_speech: 0.5           # 할루시네이션 필터: no_speech_prob 초과 세그 제외
   asr_min_logprob: -1.2            # 할루시네이션 필터: avg_logprob 미만 세그 제외
   burn_dub_subtitle: true          # 화면 한국어 자막 없을 때: 더빙 일본어 오디오 자막 번인
@@ -117,7 +118,7 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   loudnorm: false                  # ASMR 다이내믹 보존 → EBU R128 정규화 끔
   brighten:                        # 더빙 밝기 보정(음색 일치 + 자음 또렷함/단어 정확도)
     enabled: true
-    max_gain_db: 8.0               # 하이쉘프 상한(과하면 쉭소리·노이즈 증폭)
+    max_gain_db: 4.0               # 상한 4dB: 음색 보존(#2) + 자음 또렷함(#3) 중간값(2026-07-08 사용자 피드백)
     shelf_hz: 2500                 # 전반 밝기 하이쉘프 주파수
     presence_hz: 3500              # 자음 명료도 프레즌스 피킹
     step_db: 2.0                   # 적응 스텝(목표 centroid 도달까지)
