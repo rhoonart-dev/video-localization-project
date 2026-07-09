@@ -114,7 +114,7 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   voice_volume: 1.1                # 더빙 보이스 볼륨(limiter 가 피크 제한)
   fit_to_timing: true              # 합성 음성을 자막 슬롯 길이에 맞게 time-stretch(싱크)
   max_speedup: 1.35                # 자연 페이싱 상한 — 1.6은 '말이 빠르다'(2026-07-09 사용자 피드백)
-  dub_chars_per_sec: 5.5           # 더빙 번역 길이 예산(자/초) — 슬롯 대비 긴 번역이 과속의 근본 원인
+  dub_chars_per_sec: 4.5           # 더빙 번역 길이 예산(자/초) — 루피 보이스 실측 4.2~5.6, 여유있게 4.5
   voice_norm_peak: 0.9             # 어셈블된 보이스 트랙 피크 정규화(헤드룸 확보)
   loudnorm: false                  # ASMR 다이내믹 보존 → EBU R128 정규화 끔
   brighten:                        # 더빙 밝기 보정(음색 일치 + 자음 또렷함/단어 정확도)
