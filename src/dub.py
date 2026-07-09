@@ -343,9 +343,22 @@ def _gptsovits_handle(config: dict[str, Any]):
         import GPT_SoVITS.inference_webui as iw
         iw.device = "cpu"; iw.is_half = False
         md = repo / g.get("model_dir", "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained")
-        iw.change_gpt_weights(gpt_path=str(md / g.get(
-            "gpt_ckpt", "s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt")))
-        iw.change_sovits_weights(sovits_path=str(md / g.get("sovits_ckpt", "s2G2333k.pth")))
+
+        def _run_weight_fn(ret):
+            """webui 의 change_*_weights 는 제너레이터(UI 스트림용)일 수 있음 — 호출만으론
+            본문이 실행되지 않아 가중치 교체가 조용히 무시된다(2026-07-09 실측: v4 지정이
+            v2 로 남음). 소진해야 로드되며, 말미 UI 업데이트 예외는 무해라 무시."""
+            if hasattr(ret, "__iter__") and not isinstance(ret, (str, bytes, dict)):
+                try:
+                    for _ in ret:
+                        pass
+                except Exception:  # noqa: BLE001 — 가중치는 이미 적용, UI 잔여 코드 예외
+                    pass
+
+        _run_weight_fn(iw.change_gpt_weights(gpt_path=str(md / g.get(
+            "gpt_ckpt", "s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt"))))
+        _run_weight_fn(iw.change_sovits_weights(
+            sovits_path=str(md / g.get("sovits_ckpt", "s2G2333k.pth"))))
         from tools.i18n.i18n import I18nAuto
         i18n = I18nAuto()
         _GSV = {"iw": iw, "lang": {"ja": i18n("日文"), "en": i18n("英文"), "ko": i18n("韩文")}}
