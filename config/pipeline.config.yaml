@@ -133,7 +133,8 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
     repo_dir: outputs/GPT-SoVITS   # 소스 체크아웃(상대→프로젝트 루트). /tmp 정리 회피용 영구 위치
     model_dir: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained
     gpt_ckpt: s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
-    sovits_ckpt: s2G2333k.pth
+    sovits_ckpt: ../gsv-v4-pretrained/s2Gv4.pth   # v4(48kHz 보코더) — v2 대비 베이스 음질↑
+                                   # (2026-07-09 프로브: 어려운 청크도 무붕괴. 롤백은 s2G2333k.pth)
     # 은행 레퍼런스 = 루피 자연 문장 4.1s(adobe 콜라보 보컬분리, f0=405Hz).
     # ⚠ 단어 반복 루프 ref('루피 루피')는 합성이 확률적 무음 퇴화(실측 2/8만 정상) —
     # GPT-SoVITS 는 자연 발화 문장 ref 필요(실측 3/3 안정, 2026-07-08).
