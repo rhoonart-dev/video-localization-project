@@ -206,7 +206,7 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 �
   max_process_per_run: 3           # 1회 실행당 현지화 편수
   download_dir: data/source/auto   # 원본 자동 다운로드 위치
   content_type: anime              # process_video 인페인트 모드(캐릭터 애니메이션)
-  inpaint_backend: opencv          # 무설치 폴백(lama 설치 시 변경 권장)
+  inpaint_backend: lama            # LaMa(Apache-2.0) — opencv 폴백은 번짐 심함(2026-07-10 실측)
   dub_python: .venv-gsv/bin/python # Level C 더빙 인터프리터(GPT-SoVITS 스택, py3.11)
   precheck:                        # 레벨 실측 판별(제목 추정 대체)
     frames: 8                      # 샘플 프레임 수
