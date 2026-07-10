@@ -20,7 +20,7 @@ from pathlib import Path  # noqa: E402
 from typing import Any, Optional  # noqa: E402
 
 from engine import common  # noqa: E402
-from engine.common import ensure_dir, get_logger, get_secret, load_config, resolve_path, write_json  # noqa: E402
+from engine.common import ensure_dir, get_logger, get_secret, load_config, read_json, resolve_path, write_json  # noqa: E402
 
 log = get_logger("dub")
 
@@ -933,10 +933,27 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
         # 일본어 자막을 번인(시청자가 대사를 읽을 수 있게). ASR 타이밍 그대로 사용.
         if dconf.get("burn_dub_subtitle", True):
             meta = _common.probe(video)
+            # 원본 한국어 캡션과 공존 배치(사용자 결정 2026-07-10: 캡션 제거 대신 위치 회피):
+            # precheck.json 의 캡션 bbox 하단 밴드 위로 일본어 자막을 올린다.
+            margin_v = None
+            if dconf.get("subtitle_avoid_captions", True):
+                pre_path = base / "precheck.json"
+                if pre_path.exists():
+                    try:
+                        from src.precheck import caption_margin_v
+                        pre = read_json(pre_path)
+                        pc = config.get("autopilot", {}).get("precheck", {})
+                        margin_v = caption_margin_v(
+                            pre.get("ocr_frames", []), int(meta["height"]),
+                            float(pc.get("min_conf", 0.75)), int(pc.get("min_hangul", 2)))
+                        log.info("자막 배치: 캡션 회피 MarginV=%d (기본 30)", margin_v)
+                    except Exception as e:  # noqa: BLE001 — 배치 실패는 기본 위치로
+                        log.warning("캡션 회피 배치 실패(%s) — 기본 위치", e)
             ja_ass = base / "ja_dub.ass"
             ja_ass.write_text(
                 render_mod.build_ass(events, meta["width"], meta["height"],
-                                     int(config.get("render", {}).get("line_max_chars", 26))),
+                                     int(config.get("render", {}).get("line_max_chars", 26)),
+                                     margin_v=margin_v),
                 encoding="utf-8")
             subbed = _common.burn_subtitles(
                 str(out), str(ja_ass), base / "final_dubbed_subbed.mp4",

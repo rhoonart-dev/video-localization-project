@@ -58,6 +58,32 @@ def decide_route(burn_frames: int, dialogue_segs: int, min_persist: int) -> str:
     return "A"
 
 
+def caption_margin_v(frames: list[dict[str, Any]], height: int,
+                     min_conf: float, min_hangul: int, pad: int = 16,
+                     default: int = 30, max_frac: float = 0.45,
+                     bottom_frac: float = 0.70) -> int:
+    """일본어 자막의 하단 마진(MarginV) — 한국어 하단 캡션과 겹치지 않게 그 '바로 위'.
+
+    사용자 결정(2026-07-10): 캡션은 제거하지 않고 공존 — 자막 위치만 회피.
+    하단 밴드(중심이 화면 bottom_frac 아래)의 '진짜 캡션'(신뢰도·한글 필터)만 기준 —
+    중간 화면 카드에 끌려 자막이 화면 중앙까지 올라가는 것 방지(max_frac 클램프)."""
+    band_top = None
+    for f in frames:
+        for r in f.get("regions", []):
+            bbox = r.get("bbox")
+            if not bbox or float(r.get("confidence", 0)) < min_conf:
+                continue
+            if hangul_chars(r.get("text", "")) < min_hangul:
+                continue
+            y1, y2 = float(bbox[1]), float(bbox[3])
+            if (y1 + y2) / 2 < height * bottom_frac:   # 하단 밴드 아님(중간 카드 등)
+                continue
+            band_top = y1 if band_top is None else min(band_top, y1)
+    if band_top is None:
+        return default
+    return min(int(height - band_top) + pad, int(height * max_frac))
+
+
 def ensure_korean_capable(actual_backend: str, requested: str) -> None:
     """OCR 폴백 가드 — 한국어 못 읽는 백엔드로 조용히 폴백되면 번인 판정이
     항상 0 이 되어 라우트가 뒤집힌다(B→C/A). 판정을 계속하느니 실패가 낫다."""
@@ -107,8 +133,8 @@ def _ocr_probe(video: str, config: dict[str, Any]) -> tuple[list[dict[str, Any]]
             img = cv2.imread(str(fp))
             if img is None:
                 continue
-            regions = [{"text": t, "confidence": float(c)}
-                       for (_, t, c) in _ocr_scaled(ocr, img, down)]
+            regions = [{"text": t, "confidence": float(c), "bbox": list(b)}
+                       for (b, t, c) in _ocr_scaled(ocr, img, down)]
             frames.append({"frame_idx": i, "regions": regions})
     return frames, ocr.name
 
@@ -136,8 +162,11 @@ def precheck(video: str, video_id: str, config: dict[str, Any]) -> dict[str, Any
     dialogue = _asr_probe(video, config)
     route = decide_route(burn, dialogue, min_persist)
 
+    from engine.common import probe
+    meta = probe(video)
     result = {"video_id": video_id, "route": route,
               "burn_frames": burn, "dialogue_segs": dialogue,
+              "width": meta.get("width"), "height": meta.get("height"),
               "sampled_frames": len(frames), "ocr_backend": backend,
               "params": {"min_conf": min_conf, "min_hangul": min_hangul,
                          "min_persist": min_persist},

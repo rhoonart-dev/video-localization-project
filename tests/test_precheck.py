@@ -57,3 +57,27 @@ def test_decide_route_dialogue_no_burn_is_dub():
 def test_decide_route_nothing_to_localize():
     # 번인도 대사도 없음 → A (영상 무변환, 메타데이터만)
     assert decide_route(burn_frames=0, dialogue_segs=0, min_persist=2) == "A"
+
+
+def test_caption_margin_v_places_subtitle_above_bottom_captions():
+    from src.precheck import caption_margin_v
+    H = 1080
+    # 데모 실측: 하단 캡션 y 972~1038 → 자막은 그 위 (H-972+pad)
+    frames = [{"regions": [
+        {"text": "마라 엽떡, 엽기 닭발", "confidence": 0.9, "bbox": [400, 972, 1500, 1038]}]}]
+    m = caption_margin_v(frames, H, min_conf=0.75, min_hangul=2, pad=16)
+    assert m == 1080 - 972 + 16                       # = 124
+    # 중간 화면 카드(하단 아님)는 무시 → 기본 마진
+    mid = [{"regions": [
+        {"text": "퀸즈정식 소개 카드", "confidence": 0.95, "bbox": [300, 500, 900, 754]}]}]
+    assert caption_margin_v(mid, H, 0.75, 2) == 30
+    # 캡션 없음 → 기본
+    assert caption_margin_v([], H, 0.75, 2) == 30
+    # 하단 밴드가 과도하게 높아도 화면 45% 넘게 못 올라감(클램프)
+    tall = [{"regions": [
+        {"text": "큰 자막 큰 자막", "confidence": 0.9, "bbox": [0, 400, 1900, 1060]}]}]
+    assert caption_margin_v(tall, H, 0.75, 2) <= int(H * 0.45)
+    # 저신뢰/비한글은 무시
+    noise = [{"regions": [{"text": "!!", "confidence": 0.9, "bbox": [0, 1000, 100, 1050]},
+                          {"text": "마라", "confidence": 0.3, "bbox": [0, 1000, 100, 1050]}]}]
+    assert caption_margin_v(noise, H, 0.75, 2) == 30

@@ -75,8 +75,11 @@ def _align_code(position: str) -> int:
 
 
 def build_ass(events: list[dict[str, Any]], width: int, height: int,
-              line_max_chars: int = 16, font_name: str = "Noto Sans JP") -> str:
-    """events: [{start,end,text,position}] → ASS 문자열."""
+              line_max_chars: int = 16, font_name: str = "Noto Sans JP",
+              margin_v: Optional[int] = None) -> str:
+    """events: [{start,end,text,position}] → ASS 문자열.
+
+    margin_v: 하단 마진 오버라이드 — 원본 한국어 캡션과의 공존 배치(겹침 회피)용."""
     header = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}",
         "WrapStyle: 0", "",
@@ -84,7 +87,7 @@ def build_ass(events: list[dict[str, Any]], width: int, height: int,
         ("Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
          "Bold, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"),
         (f"Style: Default,{font_name},{max(24, height // 18)},&H00FFFFFF,&H00000000,"
-         "&H00000000,1,3,0,2,20,20,30,1"), "",
+         f"&H00000000,1,3,0,2,20,20,{margin_v if margin_v else 30},1"), "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]

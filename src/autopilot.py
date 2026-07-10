@@ -86,7 +86,7 @@ def build_upload_text(meta: dict[str, Any], row: dict[str, Any], route: str,
     """upload_package/UPLOAD.md — 사람이 YouTube Studio 에서 복붙·체크할 전부."""
     lines = [f"# 업로드 패키지 — {row.get('video_id')}", "",
              f"- 원본: {row.get('title')} ({row.get('url')})",
-             f"- 처리 라우트: {route} — autopilot 실측 라우팅(B=캡션 교체 / C=더빙 / BC=캡션제거+더빙 / "
+             f"- 처리 라우트: {route} — autopilot 실측 라우팅(B=캡션 교체 / C=더빙 / BC=더빙+캡션회피자막 / "
              f"A=무변환·메타만). ⚠ README 의 Level A/B/C(process_video 축)와 다른 축이니 "
              f"수동 재처리 시 `src.process_video --level` 로 혼용 금지",
              f"- QA: {qa_note}", "",
@@ -362,12 +362,9 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                 elif route == "C":
                     _run_dub(video, vid, config, config_path)
                 elif route == "BC":
-                    # 먹방류: 캡션 제거(clean) 후, 제거된 영상 위에 더빙+일본어 자막
-                    from src.process_video import process_video
-                    process_video(str(video), vid, "BC", config,
-                                  content_type=ap.get("content_type", "anime"),
-                                  inpaint_backend=ap.get("inpaint_backend", "opencv"))
-                    _run_dub(base / "final_draft.mp4", vid, config, config_path)
+                    # 먹방류(캡션+대사): 캡션은 유지(사용자 결정 2026-07-10 — 제거 불필요),
+                    # 더빙 + 일본어 자막을 캡션 위로 회피 배치(dub 가 precheck.json bbox 사용)
+                    _run_dub(video, vid, config, config_path)
                 # route A: 영상 무변환 — 메타데이터만
 
                 # 메타데이터: 제목만 주면 LLM 이 내용을 지어낸다(E2E 실측) →
