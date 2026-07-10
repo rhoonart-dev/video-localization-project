@@ -67,7 +67,7 @@ def caption_margin_v(frames: list[dict[str, Any]], height: int,
     사용자 결정(2026-07-10): 캡션은 제거하지 않고 공존 — 자막 위치만 회피.
     하단 밴드(중심이 화면 bottom_frac 아래)의 '진짜 캡션'(신뢰도·한글 필터)만 기준 —
     중간 화면 카드에 끌려 자막이 화면 중앙까지 올라가는 것 방지(max_frac 클램프)."""
-    band_top = None
+    tops: list[float] = []
     for f in frames:
         for r in f.get("regions", []):
             bbox = r.get("bbox")
@@ -78,9 +78,13 @@ def caption_margin_v(frames: list[dict[str, Any]], height: int,
             y1, y2 = float(bbox[1]), float(bbox[3])
             if (y1 + y2) / 2 < height * bottom_frac:   # 하단 밴드 아님(중간 카드 등)
                 continue
-            band_top = y1 if band_top is None else min(band_top, y1)
-    if band_top is None:
+            tops.append(y1)
+    if not tops:
         return default
+    # 중앙값 — 일회성 카드(한 프레임만 높이 뜨는 자막)가 전체 배치를 끌어올리지 않게
+    # (실측: min 기준이면 카드 y754 에 끌려 자막이 화면 중앙까지 상승, median=972 가 적정)
+    import statistics
+    band_top = statistics.median(tops)
     return min(int(height - band_top) + pad, int(height * max_frac))
 
 
