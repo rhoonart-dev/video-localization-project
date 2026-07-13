@@ -78,3 +78,12 @@ def test_build_bilingual_ass_below_uses_an8():
     ev = [{"start": 0.0, "end": 1.0, "text": "やあ", "bbox": (300, 100, 900, 160)}]
     out = build_bilingual_ass(ev, 1280, 720, 16, position="below")
     assert "\\an8" in out and "\\pos(600,168)" in out   # bbox 아래(160 + gap 8)
+
+
+def test_build_ass_margin_v_override():
+    from engine.render import build_ass
+    events = [{"start": 0.0, "end": 2.0, "text": "ルーピー"}]
+    default = build_ass(events, 1920, 1080)
+    assert ",20,20,30,1" in default                    # 기본 MarginV=30
+    raised = build_ass(events, 1920, 1080, margin_v=124)
+    assert ",20,20,124,1" in raised                    # 캡션 회피 배치

@@ -11,18 +11,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from engine.common import ensure_dir, get_logger, resolve_path
+from engine.common import ensure_dir, get_logger, resolve_path, write_json
 
 log = get_logger("qa")
 
 
 # ── 순수 헬퍼 ─────────────────────────────────────────────────────────────
 def seconds_to_tc(seconds: float) -> str:
-    """초 → mm:ss.cs 타임코드."""
-    seconds = max(0.0, seconds)
-    m = int(seconds // 60)
-    s = int(seconds % 60)
-    cs = int(round((seconds - int(seconds)) * 100))
+    """초 → mm:ss.cs 타임코드 (반올림 캐리를 초/분까지 전파)."""
+    cs_total = int(round(max(0.0, seconds) * 100))   # 먼저 센티초로 반올림 후 분해
+    m, rem = divmod(cs_total, 6000)
+    s, cs = divmod(rem, 100)
     return f"{m:02d}:{s:02d}.{cs:02d}"
 
 
@@ -167,5 +166,8 @@ def run_qa(video_id: str, original_dir: str, inpainted_dir: str, config: dict[st
                 log.warning("side-by-side 실패 %s: %s", name, e)
     report = base / "review_report.md"
     report.write_text(build_report(video_id, measures, config, extra), encoding="utf-8")
-    log.info("QA 리포트: %s (플래그 %d)", report, summarize(measures)["flagged"])
+    summary = summarize(measures)
+    # 기계 판독용(autopilot QA 게이트가 소비). 사람용 리포트와 항상 쌍으로 생성.
+    write_json({"video_id": video_id, **summary}, base / "qa_result.json")
+    log.info("QA 리포트: %s (플래그 %d)", report, summary["flagged"])
     return report

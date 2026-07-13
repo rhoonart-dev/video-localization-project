@@ -80,21 +80,14 @@ def generate(video_id: str, source_title: str, source_desc: str, config: dict[st
     persona = load_persona(config)
     glossary = load_glossary(config)
     tcfg = config.get("translate", {})
-    import os
-    model = os.environ.get("LLM_MODEL") or (tcfg.get("hero_model") if hero else tcfg.get("model"))
+    from engine import llm
+    model = llm.resolve_model(config, hero=hero)
 
-    try:
-        import anthropic
-    except ImportError as e:
-        raise ImportError("anthropic 필요: pip install anthropic") from e
-    client = anthropic.Anthropic(api_key=get_secret("LLM_API_KEY", "ANTHROPIC_API_KEY", required=True))
-    log.info("메타데이터 생성 model=%s video_id=%s", model, video_id)
-    resp = client.messages.create(
-        model=model, max_tokens=int(tcfg.get("max_tokens", 1024)),
-        system="あなたはYouTube日本市場のメタデータ最適化担当。\n" + persona.strip(),
-        messages=[{"role": "user", "content": build_prompt(source_title, source_desc, glossary)}],
-    )
-    raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+    log.info("메타데이터 생성 provider=%s model=%s video_id=%s", llm.provider(config), model, video_id)
+    raw = llm.complete(
+        "あなたはYouTube日本市場のメタデータ最適化担当。\n" + persona.strip(),
+        build_prompt(source_title, source_desc, glossary),
+        config, model=model, max_tokens=int(tcfg.get("max_tokens", 1024)), hero=hero)
     draft = assemble_draft(video_id, parse_llm_object(raw), DEFAULT_COPYRIGHT)
 
     out = Path(out_path) if out_path else resolve_path(

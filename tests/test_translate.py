@@ -26,3 +26,14 @@ def test_parse_llm_json_with_code_fence():
 def test_parse_llm_json_embedded_in_noise():
     raw = 'noise before [{"source": "a", "target": "b"}] noise after'
     assert parse_llm_json(raw)[0]["source"] == "a"
+
+
+def test_dub_prompt_discourages_katakana_pileup():
+    # 더빙 모드(char_budgets)에선 가타카나 복합어 나열 금지 지시가 들어가야 한다.
+    from engine.translate import build_user_prompt
+    p = build_user_prompt(["마라엽떡 주세요"], char_budgets=[20])
+    assert "カタカナ複合語" in p and "羅列" in p
+    assert "[≤20文字]" in p
+    # 자막 모드(예산 없음)엔 없음 — 캡션은 충실 번역 유지
+    p2 = build_user_prompt(["마라엽떡 주세요"])
+    assert "カタカナ複合語" not in p2

@@ -39,15 +39,27 @@ def build_system_prompt(persona: str, glossary: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
-def build_user_prompt(texts: list[str], drafts: Optional[dict[str, str]] = None) -> str:
+def build_user_prompt(texts: list[str], drafts: Optional[dict[str, str]] = None,
+                      char_budgets: Optional[list[int]] = None) -> str:
     lines = [
         "次の韓国語テキストを日本語にトランスクリエーションせよ。",
         '出力は JSON 配列のみ。各要素 {"source","target","notes","flagged"}。',
-        "flagged は文脈不足・固有名詞不確実など人手確認が要る場合 true。\n",
+        "flagged は文脈不足・固有名詞不確実など人手確認が要る場合 true。",
     ]
+    if char_budgets:   # 더빙용: 슬롯 초수 기반 길이 예산 — 초과하면 말이 빨라진다
+        lines.append("これは吹き替え用。各行の日本語は指定の文字数以内で、"
+                     "話し言葉として自然に短くまとめよ(内容の要点は保持)。")
+        # 긴 가타카나 복합어 나열은 TTS 가 가장 못 읽는 형태(2026-07-09 실측:
+        # 'マーラータントッポッキにタッパル…' 발음 붕괴) → 자연 문장 흐름 강제.
+        lines.append("料理名・固有名詞: 長いカタカナ複合語(8文字超)や名詞の羅列は避け、"
+                     "日本の視聴者に通じる短く自然な言い方に意訳せよ(要素の省略可)。"
+                     "名詞を詰め込まず、助詞・動詞のある話し言葉の文にすること。")
+    lines.append("")
     for i, t in enumerate(texts):
         d = f"  (DeepL下訳: {drafts[t]})" if drafts and t in drafts else ""
-        lines.append(f"{i + 1}. {t}{d}")
+        b = (f"  [≤{char_budgets[i]}文字]"
+             if char_budgets and i < len(char_budgets) else "")
+        lines.append(f"{i + 1}. {t}{d}{b}")
     return "\n".join(lines)
 
 
@@ -97,30 +109,24 @@ def deepl_draft(texts: list[str], config: dict[str, Any]) -> dict[str, str]:
 
 # ── LLM 트랜스크리에이션 ─────────────────────────────────────────────────
 def transcreate(texts: list[str], config: dict[str, Any], hero: bool = False,
-                use_deepl: bool = False) -> list[TranslationEntry]:
+                use_deepl: bool = False,
+                char_budgets: Optional[list[int]] = None) -> list[TranslationEntry]:
     if not texts:
         return []
     persona = load_persona(config)
     glossary = load_glossary(config)
     tcfg = config.get("translate", {})
-    import os
-    model = os.environ.get("LLM_MODEL") or (tcfg.get("hero_model") if hero else tcfg.get("model"))
+    from engine import llm
+    model = llm.resolve_model(config, hero=hero)
 
     drafts = deepl_draft(texts, config) if use_deepl else None
     system = build_system_prompt(persona, glossary)
-    user = build_user_prompt(texts, drafts)
+    user = build_user_prompt(texts, drafts, char_budgets=char_budgets)
 
-    try:
-        import anthropic
-    except ImportError as e:
-        raise ImportError("anthropic 필요: pip install anthropic") from e
-    client = anthropic.Anthropic(api_key=get_secret("LLM_API_KEY", "ANTHROPIC_API_KEY", required=True))
-    log.info("트랜스크리에이션 model=%s 텍스트=%d hero=%s deepl=%s", model, len(texts), hero, use_deepl)
-    resp = client.messages.create(
-        model=model, max_tokens=int(tcfg.get("max_tokens", 1024)),
-        system=system, messages=[{"role": "user", "content": user}],
-    )
-    raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+    log.info("트랜스크리에이션 provider=%s model=%s 텍스트=%d hero=%s deepl=%s",
+             llm.provider(config), model, len(texts), hero, use_deepl)
+    raw = llm.complete(system, user, config, model=model,
+                       max_tokens=int(tcfg.get("max_tokens", 1024)), hero=hero)
     rows = parse_llm_json(raw)
 
     by_source = {r.get("source"): r for r in rows}
@@ -138,9 +144,8 @@ def translate(detections_path: str, config: dict[str, Any], hero: bool = False,
               use_deepl: bool = False, out_path: Optional[str] = None) -> TranslationDoc:
     doc = DetectionDoc.load(detections_path)
     texts = doc.unique_texts()
-    import os
-    model = os.environ.get("LLM_MODEL") or (
-        config["translate"].get("hero_model") if hero else config["translate"].get("model"))
+    from engine import llm
+    model = llm.resolve_model(config, hero=hero)
     entries = transcreate(texts, config, hero=hero, use_deepl=use_deepl)
     tdoc = TranslationDoc(video_id=doc.video_id, model=model or "unknown", draft=True, entries=entries)
 

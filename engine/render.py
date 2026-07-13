@@ -58,14 +58,11 @@ def wrap_text(text: str, max_chars: int) -> list[str]:
 
 
 def ass_timestamp(seconds: float) -> str:
-    """초 → ASS 타임코드 H:MM:SS.cs"""
-    seconds = max(0.0, seconds)
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    cs = int(round((seconds - int(seconds)) * 100))
-    if cs == 100:
-        cs, s = 0, s + 1
+    """초 → ASS 타임코드 H:MM:SS.cs (반올림 캐리를 분/시까지 전파)."""
+    cs_total = int(round(max(0.0, seconds) * 100))   # 먼저 센티초로 반올림 후 분해
+    h, rem = divmod(cs_total, 360000)
+    m, rem = divmod(rem, 6000)
+    s, cs = divmod(rem, 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
@@ -78,8 +75,11 @@ def _align_code(position: str) -> int:
 
 
 def build_ass(events: list[dict[str, Any]], width: int, height: int,
-              line_max_chars: int = 16, font_name: str = "Noto Sans JP") -> str:
-    """events: [{start,end,text,position}] → ASS 문자열."""
+              line_max_chars: int = 16, font_name: str = "Noto Sans JP",
+              margin_v: Optional[int] = None) -> str:
+    """events: [{start,end,text,position}] → ASS 문자열.
+
+    margin_v: 하단 마진 오버라이드 — 원본 한국어 캡션과의 공존 배치(겹침 회피)용."""
     header = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}",
         "WrapStyle: 0", "",
@@ -87,7 +87,7 @@ def build_ass(events: list[dict[str, Any]], width: int, height: int,
         ("Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
          "Bold, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"),
         (f"Style: Default,{font_name},{max(24, height // 18)},&H00FFFFFF,&H00000000,"
-         "&H00000000,1,3,0,2,20,20,30,1"), "",
+         f"&H00000000,1,3,0,2,20,20,{margin_v if margin_v else 30},1"), "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
@@ -168,11 +168,11 @@ def build_srt(events: list[dict[str, Any]], line_max_chars: int = 16) -> str:
 
 
 def _srt_timestamp(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int(round((seconds - int(seconds)) * 1000))
+    """초 → SRT 타임코드 HH:MM:SS,mmm (반올림 캐리를 분/시까지 전파)."""
+    ms_total = int(round(max(0.0, seconds) * 1000))   # 먼저 밀리초로 반올림 후 분해
+    h, rem = divmod(ms_total, 3600000)
+    m, rem = divmod(rem, 60000)
+    s, ms = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
