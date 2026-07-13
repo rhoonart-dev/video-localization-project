@@ -1,6 +1,6 @@
 """src/precheck.py — 레벨 실측 판별 순수 로직 (OCR/ASR 실행 없음)."""
-from src.precheck import (decide_route, ensure_korean_capable, hangul_chars,
-                          solid_hit_frames)
+from src.precheck import (count_dialogue_segs, decide_route, ensure_korean_capable,
+                          foreign_audio, hangul_chars, solid_hit_frames)
 
 
 def test_ensure_korean_capable_blocks_silent_rapidocr_fallback():
@@ -57,6 +57,39 @@ def test_decide_route_dialogue_no_burn_is_dub():
 def test_decide_route_nothing_to_localize():
     # 번인도 대사도 없음 → A (영상 무변환, 메타데이터만)
     assert decide_route(burn_frames=0, dialogue_segs=0, min_persist=2) == "A"
+
+
+def test_foreign_audio_blocks_confident_non_korean():
+    # cvE0wNNrju4(2026-07-13) 실측: 음악-only 쇼츠, 강제 ko 인식이 no_speech 0.372 /
+    # logprob -1.052 로 기존 필터 통과 — 자동감지 ja 0.948 이 유일한 차단 신호.
+    assert foreign_audio("ja", 0.948) is True
+
+
+def test_foreign_audio_passes_korean_and_uncertain():
+    assert foreign_audio("ko", 0.99) is False              # 한국어 → 게이트 통과
+    assert foreign_audio("ja", 0.5) is False               # 확신 낮음 → 세그 필터에 위임
+    assert foreign_audio("ja", 0.79, min_prob=0.8) is False  # 임계 직전
+    assert foreign_audio(None, 0.0) is False               # 감지 실패 → 통과(보수적)
+
+
+def test_count_dialogue_segs_drops_full_clip_span():
+    # cvE0wNNrju4 패턴: 1세그가 클립 전체(>90% duration)를 덮음 = 할루시네이션
+    segs = [{"start": 0.0, "end": 19.5, "text": "구독과 좋아요 눌러주세요"}]
+    assert count_dialogue_segs(segs, duration=20.0) == 0
+    # 정상 대사(부분 스팬)는 그대로 카운트
+    real = [{"start": 1.0, "end": 3.2, "text": "루피 귀여워"},
+            {"start": 5.0, "end": 7.1, "text": "마라엽떡 먹방"}]
+    assert count_dialogue_segs(real, duration=20.0) == 2
+
+
+def test_count_dialogue_segs_hangul_filter_and_unknown_duration():
+    # 한글 2자 미만은 대사 아님(기존 _asr_probe 동작 유지)
+    segs = [{"start": 0.0, "end": 2.0, "text": "wow!"},
+            {"start": 3.0, "end": 5.0, "text": "아"}]
+    assert count_dialogue_segs(segs, duration=20.0) == 0
+    # duration 을 모르면(0) 스팬 필터는 건너뛴다 — 한글 필터만 적용
+    full = [{"start": 0.0, "end": 19.5, "text": "구독과 좋아요"}]
+    assert count_dialogue_segs(full, duration=0.0) == 1
 
 
 def test_caption_margin_v_places_subtitle_above_bottom_captions():

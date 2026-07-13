@@ -641,6 +641,22 @@ def reliable_segment(no_speech_prob: float, avg_logprob: float,
     return no_speech_prob <= max_no_speech and avg_logprob >= min_logprob
 
 
+def detect_audio_language(media: str, config: dict[str, Any]) -> tuple[str, float]:
+    """faster-whisper 자동 언어감지 → (언어코드, 확률). 강제 ko 인식 전 가드용.
+
+    language=None 이면 첫 30초로 언어만 판정 — 세그먼트 제너레이터를 소비하지
+    않으므로 받아쓰기 비용은 들지 않는다. transcribe 와 같은 모델/설정 사용."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as e:
+        raise ImportError("faster-whisper 필요: pip install faster-whisper") from e
+    dconf = config.get("dub", {})
+    model = WhisperModel(dconf.get("asr_model", "base"), device="cpu", compute_type="int8")
+    _, info = model.transcribe(str(media), language=None,
+                               vad_filter=bool(dconf.get("asr_vad_filter", True)))
+    return info.language, float(info.language_probability)
+
+
 def transcribe(media: str, config: dict[str, Any], language: str = "ko") -> list[dict[str, Any]]:
     """faster-whisper 로 음성 받아쓰기 → [{start,end,text}] (대사 없는 영상이면 빈 리스트).
 
