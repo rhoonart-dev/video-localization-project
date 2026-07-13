@@ -111,6 +111,14 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
                                    # 음악 오검출은 아래 할루시네이션 필터가 차단(no_speech/logprob)
   asr_max_no_speech: 0.5           # 할루시네이션 필터: no_speech_prob 초과 세그 제외
   asr_min_logprob: -1.2            # 할루시네이션 필터: avg_logprob 미만 세그 제외
+  # 음악-only 쇼츠는 강제 ko 인식이 '구독과 좋아요' 류 문구를 지어내며 위 두 필터를
+  # 통과한다(2026-07-13 cvE0wNNrju4 실측: no_speech 0.372, logprob -1.052 로 통과,
+  # 자동 언어감지는 ja 0.948) → precheck 가 route C 로 오판. 아래 게이트가 차단.
+  asr_lang_gate: true              # precheck: 강제 ko 인식 전 자동 언어감지 게이트
+  asr_expected_lang: ko            # 이 언어가 아니면서
+  asr_foreign_min_prob: 0.8        # 확률 ≥ 이 값이면 대사 0 처리(낮으면 세그 필터에 위임)
+  asr_max_span_frac: 0.9           # 클립 duration 의 이 비율 초과를 덮는 단일 세그 =
+                                   # 할루시네이션 제외(같은 사례: 1세그가 클립 전체를 덮음)
   burn_dub_subtitle: true          # 화면 한국어 자막 없을 때: 더빙 일본어 오디오 자막 번인
   dialogue_only: false             # true=실제 대사만 더빙, 씹는소리/감탄(리액션)은 원본 유지(ASMR용)
   speaker_wav: null                # xtts 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로

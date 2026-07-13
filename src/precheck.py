@@ -88,6 +88,38 @@ def caption_margin_v(frames: list[dict[str, Any]], height: int,
     return min(int(height - band_top) + pad, int(height * max_frac))
 
 
+def foreign_audio(detected_lang: str | None, lang_prob: float,
+                  expected: str = "ko", min_prob: float = 0.8) -> bool:
+    """언어 자동감지 게이트 — 오디오가 확실히 비한국어면 True(대사 0 처리).
+
+    음악만 있는 쇼츠에 Whisper ko 강제 인식을 걸면 '구독과 좋아요' 류 문구를
+    지어내고 no_speech/logprob 필터도 통과한다(실측 2026-07-13 cvE0wNNrju4:
+    no_speech 0.372, logprob -1.052 로 통과 — 자동감지는 ja 0.948).
+    감지 언어가 expected 가 아니고 확신이 min_prob 이상일 때만 차단 —
+    확신 낮은 오감지는 기존 세그먼트 필터에 맡긴다."""
+    if not detected_lang or detected_lang == expected:
+        return False
+    return lang_prob >= min_prob
+
+
+def count_dialogue_segs(segs: list[dict[str, Any]], duration: float,
+                        min_hangul: int = 2, max_span_frac: float = 0.9) -> int:
+    """한국어 대사 세그먼트 수 — 한글 min_hangul자 이상, 클립 전체를 덮는 세그 제외.
+
+    클립 duration 의 max_span_frac 초과를 혼자 덮는 세그먼트는 음악 할루시네이션
+    패턴(실측 cvE0wNNrju4: 1세그가 클립 전체를 덮음) — 실제 대사는 그렇게 안 나온다.
+    duration 을 모르면(≤0) 스팬 필터는 건너뛴다."""
+    n = 0
+    for s in segs:
+        if hangul_chars(s.get("text", "")) < min_hangul:
+            continue
+        span = float(s.get("end", 0)) - float(s.get("start", 0))
+        if duration > 0 and span > duration * max_span_frac:
+            continue
+        n += 1
+    return n
+
+
 def ensure_korean_capable(actual_backend: str, requested: str) -> None:
     """OCR 폴백 가드 — 한국어 못 읽는 백엔드로 조용히 폴백되면 번인 판정이
     항상 0 이 되어 라우트가 뒤집힌다(B→C/A). 판정을 계속하느니 실패가 낫다."""
@@ -143,15 +175,33 @@ def _ocr_probe(video: str, config: dict[str, Any]) -> tuple[list[dict[str, Any]]
     return frames, ocr.name
 
 
-def _asr_probe(video: str, config: dict[str, Any]) -> int:
-    """한국어 대사 세그먼트 수(한글 2자 이상 + 할루시네이션 필터).
+def _asr_probe(video: str, config: dict[str, Any], duration: float,
+               min_hangul: int) -> dict[str, Any]:
+    """한국어 대사 실측 → {dialogue_segs, asr_lang, asr_lang_prob}.
 
     판정과 실행의 기준 일치: 모델·필터를 실제 더빙 플로우(src/dub.transcribe)와 공유 —
-    여기서 대사로 세면 더빙도 그 대사를 쓴다."""
-    from src.dub import transcribe
+    여기서 대사로 세면 더빙도 그 대사를 쓴다. 단 강제 ko 인식 전에 자동 언어감지를
+    먼저 돌려 확실히 비한국어인 오디오는 대사 0 처리(foreign_audio 참고)."""
+    from src.dub import detect_audio_language, transcribe
+
+    dconf = config.get("dub", {})
+    lang, prob = None, 0.0
+    if bool(dconf.get("asr_lang_gate", True)):
+        lang, prob = detect_audio_language(video, config)
+        if foreign_audio(lang, prob,
+                         expected=str(dconf.get("asr_expected_lang", "ko")),
+                         min_prob=float(dconf.get("asr_foreign_min_prob", 0.8))):
+            log.info("ASR 언어 게이트: 자동감지 %s(%.3f) — 비한국어 오디오, 대사 0 처리",
+                     lang, prob)
+            return {"dialogue_segs": 0, "asr_lang": lang, "asr_lang_prob": prob}
 
     segs = transcribe(video, config, language="ko")
-    return sum(1 for s in segs if hangul_chars(s["text"]) >= 2)
+    n = count_dialogue_segs(segs, duration, min_hangul=min_hangul,
+                            max_span_frac=float(dconf.get("asr_max_span_frac", 0.9)))
+    if n < len(segs):
+        log.info("ASR 세그 필터: %d → %d (한글 %d자 미만 또는 전체-클립 스팬 제외)",
+                 len(segs), n, min_hangul)
+    return {"dialogue_segs": n, "asr_lang": lang, "asr_lang_prob": prob}
 
 
 def precheck(video: str, video_id: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -161,15 +211,19 @@ def precheck(video: str, video_id: str, config: dict[str, Any]) -> dict[str, Any
     min_hangul = int(pc.get("min_hangul", 2))
     min_persist = int(pc.get("min_persist", 2))
 
-    frames, backend = _ocr_probe(video, config)
-    burn = solid_hit_frames(frames, min_conf, min_hangul)
-    dialogue = _asr_probe(video, config)
-    route = decide_route(burn, dialogue, min_persist)
-
     from engine.common import probe
     meta = probe(video)
+
+    frames, backend = _ocr_probe(video, config)
+    burn = solid_hit_frames(frames, min_conf, min_hangul)
+    asr = _asr_probe(video, config, float(meta.get("duration", 0.0) or 0.0),
+                     min_hangul=2)
+    dialogue = asr["dialogue_segs"]
+    route = decide_route(burn, dialogue, min_persist)
+
     result = {"video_id": video_id, "route": route,
               "burn_frames": burn, "dialogue_segs": dialogue,
+              "asr_lang": asr["asr_lang"], "asr_lang_prob": asr["asr_lang_prob"],
               "width": meta.get("width"), "height": meta.get("height"),
               "sampled_frames": len(frames), "ocr_backend": backend,
               "params": {"min_conf": min_conf, "min_hangul": min_hangul,
