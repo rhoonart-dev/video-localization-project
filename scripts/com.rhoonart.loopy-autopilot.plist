@@ -3,15 +3,18 @@
 <plist version="1.0">
 <dict>
     <key>Label</key><string>com.rhoonart.loopy-autopilot</string>
+    <!-- 설치: 아래 경로를 이 머신의 레포 위치로 맞춘 뒤
+         cp scripts/com.rhoonart.loopy-autopilot.plist ~/Library/LaunchAgents/
+         launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rhoonart.loopy-autopilot.plist -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/gimsewon/rhoonart/video-localization-project/scripts/autopilot_daily.sh</string>
+        <string>/Users/steve/dev/video-localization-project/scripts/autopilot_daily.sh</string>
     </array>
     <!-- 매일 07:00. 잠들어 있었으면 깨어날 때 보충 실행(launchd 기본 동작). -->
     <key>StartCalendarInterval</key>
     <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <key>StandardOutPath</key><string>/Users/gimsewon/rhoonart/video-localization-project/outputs/autopilot_launchd.log</string>
-    <key>StandardErrorPath</key><string>/Users/gimsewon/rhoonart/video-localization-project/outputs/autopilot_launchd.log</string>
+    <key>StandardOutPath</key><string>/Users/steve/dev/video-localization-project/outputs/autopilot_launchd.log</string>
+    <key>StandardErrorPath</key><string>/Users/steve/dev/video-localization-project/outputs/autopilot_launchd.log</string>
 </dict>
 </plist>
