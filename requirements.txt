@@ -10,10 +10,12 @@ srt>=3.5
 scikit-image>=0.22
 python-dotenv>=1.0
 requests>=2.31
+yt-dlp>=2024.10         # 스카우트 폴백·원본 다운로드 (src/scout.py, src/autopilot.py 가 -m yt_dlp 호출)
 
 # === OCR (engine/detect.py) — 최소 하나 설치 ===
 #   한국어 소스는 paddleocr 권장(한글 인식 우수, 문서 전처리는 자동 비활성화).
-paddleocr>=3.0          # + paddlepaddle (CPU/GPU). 한국어 기본 백엔드
+paddleocr>=3.0          # 한국어 기본 백엔드
+paddlepaddle>=3.0       # paddleocr 실행 엔진(별도 설치 필수 — 없으면 rapidocr 폴백→한국어 불가)
 rapidocr-onnxruntime>=1.3   # 경량 폴백(한국어 인식 약함 — 영문/숫자 위주)
 # easyocr>=1.7          # 최후 폴백
 
