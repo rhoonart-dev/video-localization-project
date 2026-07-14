@@ -47,3 +47,39 @@ def test_build_report_md_contents_and_escape():
 def test_build_report_md_empty():
     md = build_report_md([], generated_at="2026-07-07")
     assert "후보 없음" in md
+
+
+# ── Phase 3: 완전 자동 선별/승인 (2026-07-14) ─────────────────────────────
+from src.autopilot import eligible_for_auto_approve, pick_auto_select
+
+
+def _rows(*scores):
+    return [{"video_id": f"v{i}", "score": s} for i, s in enumerate(scores)]
+
+
+def test_pick_auto_select_respects_min_score_and_per_day():
+    rows = _rows(0.60, 0.52, 0.44, 0.40)          # top_scored 는 점수 내림차순
+    assert [r["video_id"] for r in pick_auto_select(rows, 2, 0.45)] == ["v0", "v1"]
+    assert [r["video_id"] for r in pick_auto_select(rows, 1, 0.45)] == ["v0"]
+
+
+def test_pick_auto_select_empty_when_none_qualify():
+    # 기준 미달이면 무리해서 뽑지 않는다 — 호출부가 사람에게 알림
+    assert pick_auto_select(_rows(0.30, 0.20), 3, 0.45) == []
+    assert pick_auto_select([], 1, 0.45) == []
+
+
+def test_pick_auto_select_none_score_treated_as_zero():
+    rows = [{"video_id": "v0", "score": None}, {"video_id": "v1", "score": 0.5}]
+    assert [r["video_id"] for r in pick_auto_select(rows, 2, 0.45)] == ["v1"]
+
+
+def test_pick_auto_select_per_day_zero_or_negative():
+    assert pick_auto_select(_rows(0.9), 0, 0.45) == []
+    assert pick_auto_select(_rows(0.9), -1, 0.45) == []
+
+
+def test_eligible_for_auto_approve_hold_needs_human():
+    assert eligible_for_auto_approve("pass", True) is True
+    assert eligible_for_auto_approve("hold", True) is False    # 사람 검수로
+    assert eligible_for_auto_approve("hold", False) is True    # 게이트 해제 시만

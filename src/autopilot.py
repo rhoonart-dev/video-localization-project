@@ -11,11 +11,15 @@ Phase 1 범위: 스카우트(scan) → 스코어링(score) → 후보 리포트(
   python -m src.autopilot mark <id> --state selected|skipped   # 사람 결정 기록
   python -m src.autopilot rescore [id]        # scored → discovered (재채점)
 
-Phase 2 (처리~승인·패키지 — API 감사 전이라 업로드 클릭은 사람이 YouTube Studio 에서):
+Phase 2 (처리~승인·패키지):
   python -m src.autopilot process [--limit 3] [--video-id id]  # selected → 다운로드→실측판별→현지화→QA
   python -m src.autopilot pending                              # 승인 대기 목록(산출물 경로 포함)
-  python -m src.autopilot approve <id>                         # 승인 → upload_package/ 생성
-  python -m src.autopilot uploaded <id> --url <유튜브URL>      # 업로드 완료 기록(사람이 클릭 후)
+  python -m src.autopilot approve <id>                         # 승인 → 패키지 → (api_upload) 업로드·예약
+  python -m src.autopilot uploaded <id> --url <유튜브URL>      # 업로드 완료 기록(수동 업로드 시)
+
+Phase 3 (완전 자동, 2026-07-14 사용자 결정 — config autopilot.auto_select/auto_approve):
+  daily 가 선별→처리→승인→업로드까지 무인 수행. 업로드는 비공개+19:00 JST 예약 공개라
+  공개 전까지 Slack 알림 보고 Studio 에서 취소/수정 가능. qa=hold 는 사람 검수로 남는다.
 """
 from __future__ import annotations
 
@@ -48,6 +52,25 @@ def build_signals(row: dict[str, Any], jp_comment_ratio: Optional[float],
         "jp_comments": jp_comment_ratio,
         "llm_jp_fit": jp_score.llm_component(llm_item),
     }
+
+
+def pick_auto_select(rows: list[dict[str, Any]], per_day: int,
+                     min_score: float) -> list[dict[str, Any]]:
+    """scored 상위(점수순 정렬 전제)에서 자동 선택할 후보 — 점수 미달은 제외.
+
+    빈 결과 = 기준 통과 후보 고갈 → 호출부가 사람에게 알린다(무리한 선택 금지)."""
+    picked = []
+    for r in rows:
+        if len(picked) >= max(0, per_day):
+            break
+        if (r.get("score") or 0.0) >= min_score:
+            picked.append(r)
+    return picked
+
+
+def eligible_for_auto_approve(verdict: str, require_qa_pass: bool) -> bool:
+    """자동 승인 대상 판정 — hold 는 require_qa_pass=true 면 사람 검수로 남긴다."""
+    return verdict == "pass" or not require_qa_pass
 
 
 def valid_level(level: Any) -> Optional[str]:
@@ -565,16 +588,81 @@ def cmd_uploaded(config: dict[str, Any], video_id: str, url: Optional[str] = Non
     log.info("uploaded 기록: %s (%s)", video_id, url or "URL 미기재")
 
 
-def cmd_daily(config: dict[str, Any], config_path: Optional[str] = None) -> None:
-    """launchd 일일 실행: scan → score → process(selected 있으면) → report → Slack 다이제스트.
+def cmd_auto_select(config: dict[str, Any]) -> list[str]:
+    """scored 상위에서 자동 selected 마크(완전 자동 모드). 반환: 선택된 video_id."""
+    asel = config.get("autopilot", {}).get("auto_select", {})
+    conn = ledger.connect(config=config)
+    try:
+        rows = ledger.top_scored(conn, int(asel.get("per_day", 1)) + 10)
+        picked = pick_auto_select(rows, int(asel.get("per_day", 1)),
+                                  float(asel.get("min_score", 0.45)))
+        for r in picked:
+            ledger.set_state(conn, r["video_id"], "selected",
+                             notes=f"auto_select(score={r.get('score') or 0:.3f})")
+            log.info("auto_select: %s (%.3f) %s", r["video_id"],
+                     r.get("score") or 0, r.get("title"))
+    finally:
+        conn.close()
+    if not picked and rows:
+        from src.notify import notify
+        notify(f"⚠️ auto_select: 기준(min_score) 통과 후보 없음 — 최고점 "
+               f"{rows[0].get('score') or 0:.3f}. 직접 mark 하거나 기준 조정 필요")
+    return [r["video_id"] for r in picked]
 
-    사람의 리듬: Slack 다이제스트 보고 후보를 mark selected → 다음 daily 가 처리 →
-    승인 알림 오면 검수 후 approve → Studio 업로드."""
+
+def cmd_auto_approve(config: dict[str, Any]) -> int:
+    """pending_approval 중 QA pass 를 자동 승인(→ 업로드·예약 공개). 반환: 승인 편수.
+
+    hold 는 사람 검수로 남긴다(require_qa_pass). 실패는 다른 편 진행을 막지 않는다."""
+    from src.notify import notify
+    ap = config.get("autopilot", {})
+    aap = ap.get("auto_approve", {})
+    conn = ledger.connect(config=config)
+    try:
+        rows = ledger.get_by_state(conn, "pending_approval")
+    finally:
+        conn.close()
+    done = 0
+    for r in rows:
+        vid = r["video_id"]
+        base = resolve_path(f"{config['paths']['outputs_dir']}/{vid}")
+        summary = {"frames": 0}
+        if (r.get("level_guess") or "A") in ("B", "BC"):
+            try:
+                summary = read_json(base / "qa_result.json")
+            except Exception:
+                log.warning("qa_result.json 읽기 실패(%s) — 측정 없음 처리", vid)
+        verdict, why = qa_verdict(summary, ap.get("qa_gate", {}))
+        if not eligible_for_auto_approve(verdict, bool(aap.get("require_qa_pass", True))):
+            log.info("auto_approve 보류(qa=%s): %s — 사람 검수 필요(%s)", verdict, vid, why)
+            notify(f"🟡 자동 승인 보류(qa={verdict}) — {r.get('title')}\n"
+                   f"{why}\n검수 후: `python -m src.autopilot approve {vid}`")
+            continue
+        try:
+            cmd_approve(config, vid)                  # api_upload=true 면 업로드·예약까지
+            done += 1
+        except (Exception, SystemExit) as e:          # 한 편 실패가 나머지를 막지 않게
+            log.exception("auto_approve 실패: %s", vid)
+            notify(f"❌ 자동 승인 실패 {vid} ({r.get('title')}): {str(e)[:200]}")
+    return done
+
+
+def cmd_daily(config: dict[str, Any], config_path: Optional[str] = None) -> None:
+    """launchd 일일 실행(완전 자동, 2026-07-14): scan → score → auto_select →
+    process → auto_approve(→업로드·19:00 예약 공개) → report → Slack 다이제스트.
+
+    사람의 안전판: 공개는 예약 시각(JST 19:00)까지 유예 — Slack 알림 보고
+    YouTube Studio 에서 취소/수정 가능. qa=hold 는 자동 승인에서 제외."""
     from src.notify import build_digest, notify
+    ap = config.get("autopilot", {})
     try:
         cmd_scan(config)
         cmd_score(config)
+        if ap.get("auto_select", {}).get("enabled", False):
+            cmd_auto_select(config)
         cmd_process(config, config_path=config_path)
+        if ap.get("auto_approve", {}).get("enabled", False):
+            cmd_auto_approve(config)
         cmd_report(config)
         conn = ledger.connect(config=config)
         try:

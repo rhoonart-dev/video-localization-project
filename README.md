@@ -14,9 +14,10 @@
    알려졌으나, **ProPainter 는 S-Lab 등 비상업/연구용 라이선스일 수 있다.** 매출과 직결되므로
    상업 사용 전 저장소·가중치 라이선스를 확정하라. (`weights/README.md`, 법무 확인 권장)
    - 코드 가드: `propainter` 는 `config.inpaint.propainter_commercial_ack=true` 없으면 차단.
-2. **비가역 동작 자동화 금지.** 게시·삭제·권한변경은 파이프라인이 하지 않는다.
-   YouTube 업로드는 **사람이 최종 클릭**. `config.upload.auto_publish` 는 항상 `false`.
-3. **모든 산출물은 초벌(드래프트).** 번역·인페인팅·더빙은 검수 게이트(①②③) 통과 후에만 게시.
+2. **공개 전 유예 창 유지.** 완전 자동 모드(2026-07-14, `autopilot.auto_select/auto_approve`)에서도
+   업로드는 **비공개 + 19:00 JST 예약 공개** — 공개 시각 전까지 Slack 알림을 보고 Studio 에서
+   취소/수정할 수 있다. 삭제·권한변경은 여전히 파이프라인이 하지 않는다.
+3. **QA hold 는 자동 게시 금지.** 자동 승인은 QA `pass` 만 — `hold` 는 사람 검수 후 수동 `approve`.
 4. **폰트 라이선스**(임베딩/방송)도 확인 — `fonts/README.md`.
 
 ---
