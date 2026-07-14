@@ -224,3 +224,12 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 �
   qa_gate:                         # 자동 QA 게이트(hold 도 승인 큐로 가되 표기)
     max_flag_ratio: 0.5            # 검수필요 프레임 비율 상한
     min_ssim: 0.85                 # 평균 SSIM 하한
+  # --- Phase 3: 완전 자동(2026-07-14 사용자 결정) — 선별·승인·업로드까지 무인 ---
+  # 남은 안전판: 업로드는 비공개+19:00 JST 예약 공개 → 공개 전까지 Slack 보고 취소/수정 가능.
+  auto_select:
+    enabled: true
+    per_day: 1                     # 하루 자동 선택 편수(공개 슬롯도 하루 1편 페이스)
+    min_score: 0.45                # 미만이면 자동 선택 안 함 — 후보 고갈 시 사람에게 알림만
+  auto_approve:
+    enabled: true
+    require_qa_pass: true          # qa=hold 는 자동 승인 제외(사람 검수) — pass 만 업로드
