@@ -359,3 +359,62 @@ def test_retime_events_to_actual_durations():
     # 다음 세그 시작을 넘으면 guard 만큼 앞에서 클램프
     out2 = retime_events(events, durs=[8.0, 2.0, 1.0], guard=0.05)
     assert abs(out2[0]["end"] - (7.3 - 0.05)) < 1e-9
+
+
+# ── 자가개선: ASR 백체크 (2026-07-21) ─────────────────────────────────────
+from src.dub import backcheck_summary, cer, levenshtein, norm_for_cer, synthesize_checked
+
+BC_CFG = {"dub": {"language": "ja",
+                  "backcheck": {"enabled": True, "max_cer": 0.3,
+                                "retries": 2, "fail_cer": 0.5}}}
+
+
+def test_levenshtein_and_cer_basics():
+    assert levenshtein("abc", "abc") == 0
+    assert levenshtein("abc", "axc") == 1
+    assert levenshtein("", "ab") == 2
+    assert cer("abcd", "abcd") == 0.0
+    assert cer("abcd", "abxd") == 0.25
+    assert cer("", "") == 0.0
+    assert cer("", "x") == 1.0                        # ref 없음 + 환각 출력
+
+
+def test_norm_for_cer_fallback_absorbs_punct_space_case():
+    # pyopenjtalk 미설치 환경 폴백: NFKC + 기호/공백 제거 + 소문자화
+    assert norm_for_cer("ガンバレ、センパイ!", "ja") == norm_for_cer("ガンバレ センパイ", "ja")
+    assert norm_for_cer("Hello, World!", "en") == "helloworld"
+    assert norm_for_cer("", "ja") == ""
+
+
+def test_synthesize_checked_disabled_passthrough():
+    cfg = {"dub": {"backcheck": {"enabled": False}}}
+    data, c = synthesize_checked("テスト", cfg, synth_fn=lambda: b"WAV",
+                                 asr_fn=lambda d: (_ for _ in ()).throw(AssertionError("ASR 호출 금지")))
+    assert data == b"WAV" and c is None
+
+
+def test_synthesize_checked_retries_and_picks_best():
+    # 1차 합성 CER 1.0(오인식) → 재합성에서 정답 → 더 나은 후보 채택
+    outs = iter([b"BAD", b"GOOD", b"GOOD2"])
+    asr = {b"BAD": "全然違う文", b"GOOD": "ガンバレセンパイ", b"GOOD2": "ガンバレセンパイ"}
+    data, c = synthesize_checked("ガンバレセンパイ", BC_CFG, lang="ja",
+                                 synth_fn=lambda: next(outs), asr_fn=lambda d: asr[d])
+    assert data == b"GOOD" and c == 0.0
+
+
+def test_synthesize_checked_asr_failure_does_not_kill_dub():
+    def boom(d):
+        raise RuntimeError("asr down")
+    data, c = synthesize_checked("テスト", BC_CFG, lang="ja",
+                                 synth_fn=lambda: b"WAV", asr_fn=boom)
+    assert data == b"WAV" and c is None               # 백체크만 생략, 더빙 계속
+
+
+def test_backcheck_summary_counts_failures():
+    segs = [{"backcheck_cer": 0.0}, {"backcheck_cer": 0.6},
+            {"backcheck_cer": None}, {"text": "no-key"}]
+    s = backcheck_summary(segs, fail_cer=0.5)
+    assert s["checked"] == 2 and s["failed"] == 1
+    assert s["cer_max"] == 0.6 and abs(s["cer_avg"] - 0.3) < 1e-9
+    empty = backcheck_summary([], fail_cer=0.5)
+    assert empty["checked"] == 0 and empty["failed"] == 0

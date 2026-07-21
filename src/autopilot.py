@@ -93,6 +93,45 @@ def qa_verdict(summary: dict[str, Any], gate: dict[str, Any]) -> tuple[str, str]
     return "pass", why
 
 
+def dub_verdict(summary: dict[str, Any], gate: dict[str, Any]) -> tuple[str, str]:
+    """dub_backcheck.json 요약 → ('pass'|'hold', 사유). 미수행(checked 0)은 pass.
+
+    실패 세그(재합성 후에도 fail_cer 초과) 존재 또는 평균 CER 초과 → hold."""
+    if int(summary.get("checked", 0)) == 0:
+        return "pass", "더빙 백체크 없음"
+    why = (f"CER avg {summary.get('cer_avg')}/max {summary.get('cer_max')}, "
+           f"실패 {summary.get('failed')}세그")
+    if int(summary.get("failed", 0)) > 0:
+        return "hold", why
+    if float(summary.get("cer_avg", 0.0)) > float(gate.get("max_dub_cer_avg", 0.3)):
+        return "hold", why
+    return "pass", why
+
+
+def route_verdict(config: dict[str, Any], route: str,
+                  base: pathlib.Path) -> tuple[str, str]:
+    """라우트별 QA 종합 — B/BC: 인페인트 QA, C/BC: 더빙 백체크. 하나라도 hold 면 hold."""
+    gate = config.get("autopilot", {}).get("qa_gate", {})
+    verdicts: list[tuple[str, str]] = []
+    if route in ("B", "BC"):
+        try:
+            summary = read_json(base / "qa_result.json")
+        except Exception:                             # 부재·손상 → 측정 없음 폴백
+            log.warning("qa_result.json 읽기 실패(%s) — 측정 없음 처리", base.name)
+            summary = {"frames": 0}
+        verdicts.append(qa_verdict(summary, gate))
+    if route in ("C", "BC"):
+        try:
+            bsum = read_json(base / "dub_backcheck.json")
+        except Exception:                             # 백체크 비활성/부재 → pass(측정 없음)
+            bsum = {}
+        verdicts.append(dub_verdict(bsum, gate))
+    if not verdicts:                                  # route A — 무변환
+        return "pass", "측정 없음(무변환 — 사람 검수는 그대로)"
+    why = "; ".join(w for _, w in verdicts)
+    return ("hold" if any(v == "hold" for v, _ in verdicts) else "pass"), why
+
+
 def final_video_for(route: str, base: pathlib.Path) -> Optional[pathlib.Path]:
     """라우트별 최종 산출 영상. A(무변환)는 None — 원본을 그대로 쓴다."""
     names = {"B": ["final_draft.mp4"],
@@ -377,6 +416,7 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                 base = resolve_path(f"{config['paths']['outputs_dir']}/{vid}")
                 # 이전 실행(다른 라우트)의 QA 잔재가 이번 판정을 오염시키지 않게 제거
                 (base / "qa_result.json").unlink(missing_ok=True)
+                (base / "dub_backcheck.json").unlink(missing_ok=True)
                 if route == "B":
                     from src.process_video import process_video
                     process_video(str(video), vid, "B", config,
@@ -394,13 +434,7 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                 # 실측 대사/자막을 컨텍스트로 전달해 실제 내용에 맞게 생성.
                 from src.metadata import generate
                 generate(vid, r.get("title") or "", _content_context(base, pre), config)
-                summary = {"frames": 0}
-                if route in ("B", "BC"):              # QA 는 인페인트 비교가 있는 라우트만 의미
-                    try:
-                        summary = read_json(base / "qa_result.json")
-                    except Exception:                 # 부재·손상 → 측정 없음 폴백
-                        log.warning("qa_result.json 읽기 실패(%s) — 측정 없음 처리", vid)
-                verdict, why = qa_verdict(summary, ap.get("qa_gate", {}))
+                verdict, why = route_verdict(config, route, base)
                 ledger.set_state(conn, vid, "qa_passed",
                                  notes=f"route={route}; qa={verdict}: {why}")
                 ledger.set_state(conn, vid, "pending_approval")
@@ -626,13 +660,7 @@ def cmd_auto_approve(config: dict[str, Any]) -> int:
     for r in rows:
         vid = r["video_id"]
         base = resolve_path(f"{config['paths']['outputs_dir']}/{vid}")
-        summary = {"frames": 0}
-        if (r.get("level_guess") or "A") in ("B", "BC"):
-            try:
-                summary = read_json(base / "qa_result.json")
-            except Exception:
-                log.warning("qa_result.json 읽기 실패(%s) — 측정 없음 처리", vid)
-        verdict, why = qa_verdict(summary, ap.get("qa_gate", {}))
+        verdict, why = route_verdict(config, r.get("level_guess") or "A", base)
         if not eligible_for_auto_approve(verdict, bool(aap.get("require_qa_pass", True))):
             log.info("auto_approve 보류(qa=%s): %s — 사람 검수 필요(%s)", verdict, vid, why)
             notify(f"🟡 자동 승인 보류(qa={verdict}) — {r.get('title')}\n"
