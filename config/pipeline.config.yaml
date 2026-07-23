@@ -123,6 +123,12 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
   dialogue_only: false             # true=실제 대사만 더빙, 씹는소리/감탄(리액션)은 원본 유지(ASMR용)
   speaker_wav: null                # xtts 클로닝용 캐릭터 음성 샘플(또렷한 음성 6~30초) 경로
   asr_model: medium                # faster-whisper(영상→더빙 받아쓰기): base|small|medium (medium=인트로 등 누락↓)
+  backcheck:                       # 자가개선: 합성음 ASR 재인식 → 발음 정확도 검증(2026-07-21)
+    enabled: true
+    asr_model: medium              # 재인식 모델(미지정 시 dub.asr_model). 실측: 스모크 문장 CER 0
+    max_cer: 0.30                  # 카나 독음 기준 문자 오류율 — 초과 시 재합성
+    retries: 2                     # 재합성 상한(최저 CER 후보 채택)
+    fail_cer: 0.50                 # 재시도 후에도 초과면 실패 세그로 기록 → QA hold 근거
   bg_volume: 1.0                   # 배경(보컬 제거된 BGM) 볼륨 — 원레벨 보존, 리미터가 피크 제어
   voice_volume: 1.1                # 더빙 보이스 볼륨(limiter 가 피크 제한)
   fit_to_timing: true              # 합성 음성을 자막 슬롯 길이에 맞게 time-stretch(싱크)
@@ -224,6 +230,7 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 �
   qa_gate:                         # 자동 QA 게이트(hold 도 승인 큐로 가되 표기)
     max_flag_ratio: 0.5            # 검수필요 프레임 비율 상한
     min_ssim: 0.85                 # 평균 SSIM 하한
+    max_dub_cer_avg: 0.30          # 더빙 백체크 평균 CER 상한(C/BC) — 초과 또는 실패 세그 있으면 hold
   # --- Phase 3: 완전 자동(2026-07-14 사용자 결정) — 선별·승인·업로드까지 무인 ---
   # 남은 안전판: 업로드는 비공개+19:00 JST 예약 공개 → 공개 전까지 Slack 보고 취소/수정 가능.
   auto_select:

@@ -83,3 +83,36 @@ def test_eligible_for_auto_approve_hold_needs_human():
     assert eligible_for_auto_approve("pass", True) is True
     assert eligible_for_auto_approve("hold", True) is False    # 사람 검수로
     assert eligible_for_auto_approve("hold", False) is True    # 게이트 해제 시만
+
+
+# ── 자가개선: 더빙 백체크 QA 게이트 (2026-07-21) ──────────────────────────
+import pathlib
+import tempfile
+
+from src.autopilot import dub_verdict, route_verdict
+
+
+def test_dub_verdict_gate():
+    gate = {"max_dub_cer_avg": 0.3}
+    assert dub_verdict({}, gate)[0] == "pass"                       # 백체크 미수행
+    assert dub_verdict({"checked": 0}, gate)[0] == "pass"
+    ok = {"checked": 5, "cer_avg": 0.1, "cer_max": 0.25, "failed": 0}
+    assert dub_verdict(ok, gate)[0] == "pass"
+    assert dub_verdict({**ok, "failed": 1}, gate)[0] == "hold"      # 실패 세그 존재
+    assert dub_verdict({**ok, "cer_avg": 0.31}, gate)[0] == "hold"  # 평균 초과
+
+
+def test_route_verdict_combines_dub_backcheck():
+    import json
+    cfg = {"autopilot": {"qa_gate": {"max_dub_cer_avg": 0.3}}}
+    with tempfile.TemporaryDirectory() as td:
+        base = pathlib.Path(td)
+        assert route_verdict(cfg, "A", base)[0] == "pass"           # 무변환
+        assert route_verdict(cfg, "C", base)[0] == "pass"           # 백체크 파일 없음 → pass
+        (base / "dub_backcheck.json").write_text(json.dumps(
+            {"checked": 3, "cer_avg": 0.4, "cer_max": 0.7, "failed": 1}))
+        v, why = route_verdict(cfg, "C", base)
+        assert v == "hold" and "실패 1" in why
+        (base / "dub_backcheck.json").write_text(json.dumps(
+            {"checked": 3, "cer_avg": 0.05, "cer_max": 0.1, "failed": 0}))
+        assert route_verdict(cfg, "C", base)[0] == "pass"

@@ -487,6 +487,126 @@ def synthesize_segment(text: str, config: dict[str, Any], voice_id: Optional[str
     return _synthesize_elevenlabs(text, voice_id, config)
 
 
+# ── 자가개선: ASR 백체크 — 합성음 재인식 → 발음 정확도(CER) 검증(2026-07-21) ──
+_BC_ASR: dict[str, Any] = {}                          # 백체크 ASR 모델 캐시(크기별)
+
+
+def levenshtein(a: str, b: str) -> int:
+    """편집거리(순수, 2행 DP) — CER 용."""
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def cer(ref: str, hyp: str) -> float:
+    """문자 오류율 = 편집거리/len(ref). ref 가 비면 hyp 유무로 0/1."""
+    if not ref:
+        return 0.0 if not hyp else 1.0
+    return levenshtein(ref, hyp) / len(ref)
+
+
+def norm_for_cer(text: str, lang: str = "ja") -> str:
+    """CER 비교용 정규화 — 표기 차이를 발음 기준으로 흡수.
+
+    ja 는 pyopenjtalk 카나 독음(頑張れ→ガンバレ)으로 한자/가나 표기차를 제거.
+    미설치·실패 시 NFKC+기호 제거 폴백(같은 표기끼리만 비교 가능)."""
+    import re
+    import unicodedata
+    t = unicodedata.normalize("NFKC", text or "")
+    t = re.sub(r"[\W_]+", "", t)                      # 공백·구두점 제거(유니코드 단어문자 유지)
+    if lang == "ja" and t:
+        try:
+            import pyopenjtalk                        # lazy — GPT-SoVITS 스택에 포함
+            t = re.sub(r"[\W_]+", "", pyopenjtalk.g2p(t, kana=True))
+        except Exception:                             # noqa: BLE001 — 폴백도 유효한 비교
+            pass
+    return t.lower()
+
+
+def _bc_asr_text(wav_path: str, config: dict[str, Any], lang: str) -> str:
+    from faster_whisper import WhisperModel
+    dcfg = config.get("dub", {})
+    size = dcfg.get("backcheck", {}).get("asr_model") or dcfg.get("asr_model", "base")
+    model = _BC_ASR.get(size)
+    if model is None:
+        model = _BC_ASR[size] = WhisperModel(size, device="cpu", compute_type="int8")
+    segs, _ = model.transcribe(str(wav_path), language=lang)
+    return "".join(s.text for s in segs).strip()
+
+
+def synthesize_checked(text: str, config: dict[str, Any],
+                       voice_id: Optional[str] = None, speaker_wav: Optional[str] = None,
+                       lang: Optional[str] = None, synth_fn=None,
+                       asr_fn=None) -> tuple[bytes, Optional[float]]:
+    """합성 + ASR 백체크: 재인식 CER 이 max_cer 초과면 재합성, 최저 CER 후보 채택.
+
+    반환 (data, cer). cer=None 은 백체크 미수행(비활성·빈 합성·ASR 장애 — 더빙은 계속).
+    synth_fn/asr_fn 은 테스트 주입용."""
+    dcfg = config.get("dub", {})
+    bc = dcfg.get("backcheck", {})
+    synth = synth_fn or (lambda: synthesize_segment(
+        text, config, voice_id=voice_id, speaker_wav=speaker_wav, lang=lang))
+    data = synth()
+    if not bc.get("enabled", False) or not data:
+        return data, None
+    seg_lang = lang or _detect_lang(text, dcfg.get("language", "ja"))
+    target = norm_for_cer(text, seg_lang)
+    if not target:
+        return data, None
+
+    def _measure(d: bytes) -> float:
+        if asr_fn is not None:
+            hyp = asr_fn(d)
+        else:
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+                f.write(d)
+                f.flush()
+                hyp = _bc_asr_text(f.name, config, seg_lang)
+        return cer(target, norm_for_cer(hyp, seg_lang))
+
+    try:
+        best_cer = _measure(data)
+    except Exception as e:                            # noqa: BLE001 — ASR 장애가 더빙을 죽이지 않게
+        log.warning("백체크 ASR 실패(건너뜀): %s", e)
+        return data, None
+    max_cer = float(bc.get("max_cer", 0.3))
+    for _ in range(max(0, int(bc.get("retries", 2)))):
+        if best_cer <= max_cer:
+            break
+        cand = synth()
+        if not cand:
+            break
+        try:
+            c = _measure(cand)
+        except Exception:                             # noqa: BLE001
+            break
+        log.info("백체크 재합성: CER %.2f → %.2f (%r)", best_cer, c, text[:20])
+        if c < best_cer:
+            data, best_cer = cand, c
+    if best_cer > float(bc.get("fail_cer", 0.5)):
+        log.warning("백체크 실패 세그(CER %.2f): %r — QA hold 근거로 기록", best_cer, text[:30])
+    return data, best_cer
+
+
+def backcheck_summary(segments: list[dict[str, Any]], fail_cer: float) -> dict[str, Any]:
+    """세그별 backcheck_cer → dub_backcheck.json 요약(자동 승인 QA 게이트 입력)."""
+    cers = [float(s["backcheck_cer"]) for s in segments
+            if s.get("backcheck_cer") is not None]
+    if not cers:
+        return {"checked": 0, "cer_avg": 0.0, "cer_max": 0.0, "failed": 0}
+    return {"checked": len(cers),
+            "cer_avg": round(sum(cers) / len(cers), 4),
+            "cer_max": round(max(cers), 4),
+            "failed": sum(1 for c in cers if c > fail_cer)}
+
+
 def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
         voice_id: Optional[str] = None, speaker_wav: Optional[str] = None) -> dict[str, Any]:
     require_level_c(level)
@@ -520,7 +640,8 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
     seg_files: list[tuple[float, Path]] = []
     actual_durs: list[float] = []                     # 세그별 실제 길이(자막 retime 용)
     for i, seg in enumerate(segments):
-        data = synthesize_segment(seg["text"], config, voice_id=voice_id, speaker_wav=speaker_wav)
+        data, seg["backcheck_cer"] = synthesize_checked(
+            seg["text"], config, voice_id=voice_id, speaker_wav=speaker_wav)
         if not data:                                  # 지문/빈 텍스트 → 더빙 스킵(드론 방지)
             log.info("세그 %d 스킵(합성 없음): %r", i, seg["text"])
             actual_durs.append(0.0)
@@ -552,6 +673,12 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
     _normalize_track(draft, float(config.get("dub", {}).get("voice_norm_peak", 0.9)))
     write_json(build_alignment_report(video_id, segments, voice_ref),
                base / "alignment_report.json")
+    bc = config.get("dub", {}).get("backcheck", {})
+    if bc.get("enabled", False):                      # 자가개선: QA 게이트 입력(autopilot)
+        summary = backcheck_summary(segments, float(bc.get("fail_cer", 0.5)))
+        write_json(summary, base / "dub_backcheck.json")
+        log.info("백체크 요약: 검사 %d세그, CER avg %.3f / max %.3f, 실패 %d",
+                 summary["checked"], summary["cer_avg"], summary["cer_max"], summary["failed"])
     log.info("더빙 초안(검토 전): %s (세그먼트 %d, backend=%s)", draft, len(segments), backend)
     return {"draft": str(draft), "segments": len(segments), "backend": backend,
             "actual_durs": actual_durs}
