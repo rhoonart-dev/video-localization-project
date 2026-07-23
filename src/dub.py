@@ -491,24 +491,7 @@ def synthesize_segment(text: str, config: dict[str, Any], voice_id: Optional[str
 _BC_ASR: dict[str, Any] = {}                          # 백체크 ASR 모델 캐시(크기별)
 
 
-def levenshtein(a: str, b: str) -> int:
-    """편집거리(순수, 2행 DP) — CER 용."""
-    if len(a) < len(b):
-        a, b = b, a
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        prev = cur
-    return prev[-1]
-
-
-def cer(ref: str, hyp: str) -> float:
-    """문자 오류율 = 편집거리/len(ref). ref 가 비면 hyp 유무로 0/1."""
-    if not ref:
-        return 0.0 if not hyp else 1.0
-    return levenshtein(ref, hyp) / len(ref)
+from engine.common import cer, levenshtein, norm_text  # noqa: E402 — 백체크 공용(engine/common)
 
 
 def norm_for_cer(text: str, lang: str = "ja") -> str:
@@ -516,17 +499,14 @@ def norm_for_cer(text: str, lang: str = "ja") -> str:
 
     ja 는 pyopenjtalk 카나 독음(頑張れ→ガンバレ)으로 한자/가나 표기차를 제거.
     미설치·실패 시 NFKC+기호 제거 폴백(같은 표기끼리만 비교 가능)."""
-    import re
-    import unicodedata
-    t = unicodedata.normalize("NFKC", text or "")
-    t = re.sub(r"[\W_]+", "", t)                      # 공백·구두점 제거(유니코드 단어문자 유지)
+    t = norm_text(text)
     if lang == "ja" and t:
         try:
             import pyopenjtalk                        # lazy — GPT-SoVITS 스택에 포함
-            t = re.sub(r"[\W_]+", "", pyopenjtalk.g2p(t, kana=True))
+            t = norm_text(pyopenjtalk.g2p(t, kana=True))
         except Exception:                             # noqa: BLE001 — 폴백도 유효한 비교
             pass
-    return t.lower()
+    return t
 
 
 def _bc_asr_text(wav_path: str, config: dict[str, Any], lang: str) -> str:

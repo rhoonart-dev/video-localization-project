@@ -87,3 +87,24 @@ def test_build_ass_margin_v_override():
     assert ",20,20,30,1" in default                    # 기본 MarginV=30
     raised = build_ass(events, 1920, 1080, margin_v=124)
     assert ",20,20,124,1" in raised                    # 캡션 회피 배치
+
+
+# ── 자가개선: 렌더 OCR 백체크 (2026-07-21) ────────────────────────────────
+from engine.render import match_cer, pick_backcheck_frames
+
+
+def test_match_cer_absorbs_line_splits_and_noise():
+    # OCR 이 줄을 쪼개도 전체 연결 후보로 흡수
+    assert match_cer("ラーメン最高", ["ラーメン", "最高"]) == 0.0
+    assert match_cer("ラーメン最高", ["ラーメン最高"]) == 0.0
+    assert match_cer("ラーメン最高", ["全然違う"]) > 0.5
+    assert match_cer("", ["아무거나"]) == 0.0          # 기대 텍스트 없음 → 검사 무의미
+    assert match_cer("ラーメン", []) == 1.0            # OCR 전무 → 완전 불일치
+
+
+def test_pick_backcheck_frames_even_sampling():
+    assert pick_backcheck_frames([1, 2, 3], 6) == [1, 2, 3]        # 전수
+    picked = pick_backcheck_frames(list(range(100)), 6)
+    assert len(picked) == 6 and picked[0] == 0                     # 균등 간격
+    assert pick_backcheck_frames([1, 2], 0) == []
+    assert pick_backcheck_frames([], 6) == []

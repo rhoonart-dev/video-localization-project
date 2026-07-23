@@ -286,3 +286,31 @@ def burn_subtitles(video: str | os.PathLike, ass_path: str | os.PathLike,
           "-c:v", "libx264", "-crf", str(crf), "-pix_fmt", pix_fmt,
           "-c:a", "copy", "-movflags", "+faststart", str(out)])
     return out
+
+
+# ── 텍스트 비교(백체크 공용) ─────────────────────────────────────────────
+def levenshtein(a: str, b: str) -> int:
+    """편집거리(순수, 2행 DP) — CER 용."""
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def cer(ref: str, hyp: str) -> float:
+    """문자 오류율 = 편집거리/len(ref). ref 가 비면 hyp 유무로 0/1."""
+    if not ref:
+        return 0.0 if not hyp else 1.0
+    return levenshtein(ref, hyp) / len(ref)
+
+
+def norm_text(text: str) -> str:
+    """표기 비교용 경량 정규화 — NFKC + 기호/공백 제거 + 소문자화(발음 변환 없음)."""
+    import re
+    import unicodedata
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", text or "")).lower()
