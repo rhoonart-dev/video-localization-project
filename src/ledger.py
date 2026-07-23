@@ -60,6 +60,15 @@ CREATE TABLE IF NOT EXISTS videos (
     updated_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_videos_state ON videos(state);
+CREATE TABLE IF NOT EXISTS kpi_snapshots (           -- 자가개선: 게시 영상 성과 추적(2026-07-21)
+    video_id    TEXT NOT NULL,                       -- 원장 video_id (원본 기준)
+    youtube_id  TEXT NOT NULL,                       -- 게시된 JP 영상 id
+    taken_at    TEXT NOT NULL,                       -- UTC ISO
+    views       INTEGER,
+    likes       INTEGER,
+    comments    INTEGER,
+    PRIMARY KEY (video_id, taken_at)
+);
 """
 
 
@@ -189,3 +198,22 @@ def top_scored(conn: sqlite3.Connection, n: int = 10) -> list[dict[str, Any]]:
 def counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {r["state"]: r["n"] for r in conn.execute(
         "SELECT state, COUNT(*) AS n FROM videos GROUP BY state")}
+
+
+# ── KPI 스냅샷 (자가개선: 게시 성과 추적, 2026-07-21) ─────────────────────
+def record_kpi(conn: sqlite3.Connection, video_id: str, youtube_id: str,
+               stats: dict[str, Any]) -> None:
+    """일일 성과 스냅샷 기록(같은 시각 중복은 무시)."""
+    conn.execute(
+        """INSERT OR IGNORE INTO kpi_snapshots
+             (video_id, youtube_id, taken_at, views, likes, comments)
+           VALUES (?,?,?,?,?,?)""",
+        (video_id, youtube_id, _now(), stats.get("views"), stats.get("likes"),
+         stats.get("comments")))
+    conn.commit()
+
+
+def kpi_history(conn: sqlite3.Connection, video_id: str) -> list[dict[str, Any]]:
+    """영상별 스냅샷 시계열(오래된 순)."""
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM kpi_snapshots WHERE video_id=? ORDER BY taken_at", (video_id,))]

@@ -116,3 +116,40 @@ def test_route_verdict_combines_dub_backcheck():
         (base / "dub_backcheck.json").write_text(json.dumps(
             {"checked": 3, "cer_avg": 0.05, "cer_max": 0.1, "failed": 0}))
         assert route_verdict(cfg, "C", base)[0] == "pass"
+
+
+# ── 자가개선: 렌더 백체크 게이트 + KPI (2026-07-21) ───────────────────────
+from src.autopilot import build_kpi_report, kpi_delta, render_verdict
+
+
+def test_render_verdict_gate():
+    gate = {"min_render_match": 0.8}
+    assert render_verdict({}, gate)[0] == "pass"                   # 미수행
+    ok = {"checked": 5, "matched": 5, "cer_avg": 0.05, "failed": 0}
+    assert render_verdict(ok, gate)[0] == "pass"
+    assert render_verdict({**ok, "matched": 3}, gate)[0] == "hold"  # 60% < 80%
+
+
+def test_kpi_delta_seven_day_baseline():
+    hist = [{"taken_at": "2026-07-01T00:00:00+00:00", "views": 100},
+            {"taken_at": "2026-07-10T00:00:00+00:00", "views": 500},
+            {"taken_at": "2026-07-14T00:00:00+00:00", "views": 900},
+            {"taken_at": "2026-07-21T00:00:00+00:00", "views": 1000}]
+    assert kpi_delta(hist) == 100                     # 기준=7/14(7일 이상 과거 중 최근) → 1000-900
+    assert kpi_delta(hist[:2]) == 400                 # 이력 짧으면 최초 대비
+    assert kpi_delta(hist[:1]) is None                # 스냅샷 1개 → 측정 불가
+    assert kpi_delta([]) is None
+
+
+def test_build_kpi_report_sorts_and_compares_routes():
+    items = [
+        {"video_id": "a", "youtube_id": "ya", "title": "A영상", "route": "A",
+         "views": 100, "d7_views": 50},
+        {"video_id": "b", "youtube_id": "yb", "title": "B영상", "route": "C",
+         "views": 900, "d7_views": None},
+    ]
+    r = build_kpi_report(items)
+    assert r.index("B영상") < r.index("A영상")         # 조회수 내림차순
+    assert "+50" in r and "측정 축적 중" in r
+    assert "라우트별 평균" in r                         # 2종 이상 → 비교 표시
+    assert "게시 영상 없음" in build_kpi_report([])
