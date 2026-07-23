@@ -257,6 +257,77 @@ def render_replace(inpainted_dir: str, doc: DetectionDoc, tmap: dict[str, str],
     return out
 
 
+# ── 자가개선: 렌더 OCR 백체크 — 번인된 일본어를 되읽어 잘림/폰트깨짐 검출(2026-07-21) ──
+def match_cer(expected: str, ocr_texts: list[str]) -> float:
+    """기대 텍스트 vs OCR 결과 최소 CER(순수). 후보 = 각 결과 + 전체 연결(줄분리 흡수)."""
+    from engine.common import cer, norm_text
+    exp = norm_text(expected)
+    if not exp:
+        return 0.0
+    cands = [norm_text(t) for t in ocr_texts if t] + [norm_text("".join(ocr_texts))]
+    return min((cer(exp, c) for c in cands), default=1.0)
+
+
+def pick_backcheck_frames(frame_indices: list[int], limit: int) -> list[int]:
+    """검사 프레임 샘플(순수) — 균등 간격으로 최대 limit 개(비용 가드)."""
+    if limit <= 0 or not frame_indices:
+        return []
+    if len(frame_indices) <= limit:
+        return list(frame_indices)
+    step = len(frame_indices) / limit
+    return [frame_indices[int(i * step)] for i in range(limit)]
+
+
+def render_backcheck(rendered_dir: str, doc: DetectionDoc, tmap: dict[str, str],
+                     config: dict[str, Any]) -> dict[str, Any]:
+    """번인 프레임 샘플을 일본어 OCR 로 되읽어 기대 텍스트와 대조 → 요약 dict.
+
+    OCR 은 PP-OCRv5 기본 rec(일본어 지원) — detect 의 한국어 rec 과 별도 인스턴스.
+    실패(모델 부재 등)는 요약에 error 로 기록하고 예외를 올리지 않는다(렌더는 유효)."""
+    import cv2
+
+    from engine.detect import make_ocr
+    bc = config.get("render", {}).get("backcheck", {})
+    max_cer = float(bc.get("max_cer", 0.3))
+    with_text = [(f.frame_idx, [tmap.get(r.text.strip(), "") for r in f.regions
+                                if tmap.get(r.text.strip(), "")])
+                 for f in doc.frames]
+    with_text = [(i, texts) for i, texts in with_text if texts]
+    picked = set(pick_backcheck_frames([i for i, _ in with_text],
+                                       int(bc.get("frames", 6))))
+    if not picked:
+        return {"checked": 0, "matched": 0, "cer_avg": 0.0, "failed": 0}
+    try:
+        dcfg = config.get("detect", {})
+        ocr = make_ocr("paddleocr", languages=["japan"],
+                       paddle_opts={"det_model": dcfg.get("paddle_det_model"),
+                                    "rec_model": bc.get("rec_model", "PP-OCRv5_mobile_rec")})
+    except Exception as e:                            # noqa: BLE001 — 백체크 불가 ≠ 렌더 실패
+        log.warning("렌더 백체크 OCR 초기화 실패(생략): %s", e)
+        return {"checked": 0, "matched": 0, "cer_avg": 0.0, "failed": 0, "error": str(e)[:200]}
+    cers: list[float] = []
+    for idx, texts in with_text:
+        if idx not in picked:
+            continue
+        fp = Path(rendered_dir) / f"{idx:06d}.png"
+        if not fp.exists():                           # 프레임 파일명 규칙 불일치 등
+            continue
+        frame = cv2.imread(str(fp))
+        if frame is None:
+            continue
+        ocr_texts = [t for _, t, _ in ocr.recognize(frame)]
+        for expected in texts:
+            cers.append(match_cer(expected, ocr_texts))
+    if not cers:
+        return {"checked": 0, "matched": 0, "cer_avg": 0.0, "failed": 0}
+    failed = sum(1 for c in cers if c > max_cer)
+    summary = {"checked": len(cers), "matched": len(cers) - failed,
+               "cer_avg": round(sum(cers) / len(cers), 4), "failed": failed}
+    log.info("렌더 백체크: %d건 검사, 일치 %d, CER avg %.3f",
+             summary["checked"], summary["matched"], summary["cer_avg"])
+    return summary
+
+
 # ── 오케스트레이션 ───────────────────────────────────────────────────────
 def render(doc_path: str, translations_path: str, config: dict[str, Any],
            mode: Optional[str] = None, inpainted_dir: Optional[str] = None,
@@ -283,6 +354,10 @@ def render(doc_path: str, translations_path: str, config: dict[str, Any],
             raise ValueError("replace 모드는 --inpainted (인페인팅된 프레임) 필요")
         result["frames"] = str(render_replace(inpainted_dir, doc, tmap, config,
                                               str(base / "rendered"), font_map))
+        if config.get("render", {}).get("backcheck", {}).get("enabled", False):
+            from engine.common import write_json     # 자가개선: 번인 결과 OCR 대조 → QA 게이트
+            write_json(render_backcheck(result["frames"], doc, tmap, config),
+                       base / "render_backcheck.json")
     elif mode == "bilingual":
         # 한국어 자막 유지 + 그 위/아래에 일본어 추가(인페인팅 없음). 원본 영상에 번인.
         pos = config.get("render", {}).get("overlay_position", "above")

@@ -108,9 +108,24 @@ def dub_verdict(summary: dict[str, Any], gate: dict[str, Any]) -> tuple[str, str
     return "pass", why
 
 
+def render_verdict(summary: dict[str, Any], gate: dict[str, Any]) -> tuple[str, str]:
+    """render_backcheck.json 요약 → ('pass'|'hold', 사유). 미수행(checked 0)은 pass.
+
+    일치율(matched/checked)이 min_render_match 미만 → hold(잘림/폰트깨짐 의심)."""
+    checked = int(summary.get("checked", 0))
+    if checked == 0:
+        return "pass", "렌더 백체크 없음"
+    ratio = int(summary.get("matched", 0)) / checked
+    why = f"렌더 일치 {ratio:.0%} (CER avg {summary.get('cer_avg')})"
+    if ratio < float(gate.get("min_render_match", 0.8)):
+        return "hold", why
+    return "pass", why
+
+
 def route_verdict(config: dict[str, Any], route: str,
                   base: pathlib.Path) -> tuple[str, str]:
-    """라우트별 QA 종합 — B/BC: 인페인트 QA, C/BC: 더빙 백체크. 하나라도 hold 면 hold."""
+    """라우트별 QA 종합 — B/BC: 인페인트 QA+렌더 백체크, C/BC: 더빙 백체크.
+    하나라도 hold 면 hold."""
     gate = config.get("autopilot", {}).get("qa_gate", {})
     verdicts: list[tuple[str, str]] = []
     if route in ("B", "BC"):
@@ -120,6 +135,12 @@ def route_verdict(config: dict[str, Any], route: str,
             log.warning("qa_result.json 읽기 실패(%s) — 측정 없음 처리", base.name)
             summary = {"frames": 0}
         verdicts.append(qa_verdict(summary, gate))
+    if route == "B":                                  # BC 는 render_mode=clean(재렌더 없음)
+        try:
+            rsum = read_json(base / "render_backcheck.json")
+        except Exception:                             # 백체크 비활성/부재 → pass(측정 없음)
+            rsum = {}
+        verdicts.append(render_verdict(rsum, gate))
     if route in ("C", "BC"):
         try:
             bsum = read_json(base / "dub_backcheck.json")
@@ -417,6 +438,7 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                 # 이전 실행(다른 라우트)의 QA 잔재가 이번 판정을 오염시키지 않게 제거
                 (base / "qa_result.json").unlink(missing_ok=True)
                 (base / "dub_backcheck.json").unlink(missing_ok=True)
+                (base / "render_backcheck.json").unlink(missing_ok=True)
                 if route == "B":
                     from src.process_video import process_video
                     process_video(str(video), vid, "B", config,
@@ -585,6 +607,103 @@ def cmd_upload(config: dict[str, Any], video_id: str) -> dict[str, Any]:
     return {"youtube_id": yt_id, "publish_at": publish_at, "url": url}
 
 
+# ── 자가개선: KPI 추적 — 게시 영상 성과 스냅샷 + 주간 리포트(2026-07-21) ──
+def kpi_delta(history: list[dict[str, Any]], days: float = 7.0) -> Optional[int]:
+    """스냅샷 시계열(오래된 순) → 최근 days 일 조회수 증가(순수).
+
+    기준점 = 최신으로부터 days 일 이상 떨어진 가장 가까운 과거 스냅샷.
+    이력이 짧으면 최초 스냅샷 대비. 스냅샷 1개 이하면 None(측정 불가)."""
+    pts = [h for h in history if h.get("views") is not None]
+    if len(pts) < 2:
+        return None
+    latest = datetime.fromisoformat(pts[-1]["taken_at"])
+    baseline = pts[0]
+    for h in pts[:-1]:
+        if (latest - datetime.fromisoformat(h["taken_at"])).total_seconds() >= days * 86400:
+            baseline = h                              # 조건 만족하는 가장 최근(마지막 승자)
+    return int(pts[-1]["views"]) - int(baseline["views"])
+
+
+def build_kpi_report(items: list[dict[str, Any]]) -> str:
+    """게시 영상 성과 → Slack 주간 리포트 텍스트(순수). 라우트별 평균 비교 포함."""
+    lines = ["*📈 loopy-jp KPI 리포트 (게시 영상 성과)*", ""]
+    if not items:
+        return "\n".join(lines + ["게시 영상 없음"])
+    for it in sorted(items, key=lambda x: -(x.get("views") or 0)):
+        d7 = it.get("d7_views")
+        d7s = f"+{d7:,}/7일" if d7 is not None else "측정 축적 중"
+        lines.append(f"- [{it.get('route') or '?'}] <https://youtu.be/{it['youtube_id']}|"
+                     f"{it.get('title')}> — 조회 {it.get('views') or 0:,} ({d7s})")
+    by_route: dict[str, list[int]] = {}
+    for it in items:
+        if it.get("views") is not None:
+            by_route.setdefault(it.get("route") or "?", []).append(int(it["views"]))
+    if len(by_route) > 1:                             # 라우트 비교는 2종 이상일 때만 의미
+        lines.append("")
+        lines.append("라우트별 평균 조회: " + " / ".join(
+            f"{r} {sum(v) // len(v):,}" for r, v in sorted(by_route.items())))
+    lines.append("")
+    lines.append("_점수 기준(min_score)·라우트 전략 조정 판단 근거로 사용_")
+    return "\n".join(lines)
+
+
+def _fetch_video_stats(youtube_ids: list[str], api_key: str) -> dict[str, dict[str, int]]:
+    """YouTube Data API videos.list(statistics) — 공개 지표 일괄 조회(50개 배치)."""
+    import urllib.parse
+    import urllib.request
+    out: dict[str, dict[str, int]] = {}
+    for i in range(0, len(youtube_ids), 50):
+        q = urllib.parse.urlencode({"part": "statistics",
+                                    "id": ",".join(youtube_ids[i:i + 50]), "key": api_key})
+        with urllib.request.urlopen(
+                f"https://www.googleapis.com/youtube/v3/videos?{q}", timeout=30) as r:
+            data = json.loads(r.read().decode())
+        for item in data.get("items", []):
+            st = item.get("statistics", {})
+            out[item["id"]] = {"views": int(st.get("viewCount", 0)),
+                               "likes": int(st.get("likeCount", 0)),
+                               "comments": int(st.get("commentCount", 0))}
+    return out
+
+
+def cmd_kpi(config: dict[str, Any], send_report: bool = False) -> list[dict[str, Any]]:
+    """uploaded 영상 성과 스냅샷 수집(매일) + 리포트(주간 또는 --report).
+
+    API 키 없으면 조용히 생략(수집만 불가 — 파이프라인 영향 없음)."""
+    from src.notify import notify
+    api_key = get_secret("YOUTUBE_API_KEY")
+    if not api_key:
+        log.info("KPI: YOUTUBE_API_KEY 미설정 — 수집 생략")
+        return []
+    conn = ledger.connect(config=config)
+    try:
+        rows = [r for r in ledger.get_by_state(conn, "uploaded") if r.get("youtube_id")]
+        if not rows:
+            log.info("KPI: 게시 영상 없음")
+            return []
+        stats = _fetch_video_stats([r["youtube_id"] for r in rows], api_key)
+        items = []
+        for r in rows:
+            st = stats.get(r["youtube_id"])
+            if st:
+                ledger.record_kpi(conn, r["video_id"], r["youtube_id"], st)
+            hist = ledger.kpi_history(conn, r["video_id"])
+            route = None
+            if r.get("notes") and "route=" in (r.get("notes") or ""):
+                route = r["notes"].split("route=")[1][:2].rstrip(";").rstrip()
+            items.append({"video_id": r["video_id"], "youtube_id": r["youtube_id"],
+                          "title": r.get("title"), "route": route or r.get("level_guess"),
+                          "views": (st or {}).get("views"),
+                          "likes": (st or {}).get("likes"),
+                          "d7_views": kpi_delta(hist)})
+    finally:
+        conn.close()
+    log.info("KPI 스냅샷: %d편 수집", len(items))
+    if send_report:
+        notify(build_kpi_report(items))
+    return items
+
+
 def cmd_refbank(config: dict[str, Any], action: str,
                 sources: Optional[list[str]] = None) -> None:
     """레퍼런스 음성 은행 관리 — status(현황) | seed(대사 소스에서 축적).
@@ -692,6 +811,12 @@ def cmd_daily(config: dict[str, Any], config_path: Optional[str] = None) -> None
         if ap.get("auto_approve", {}).get("enabled", False):
             cmd_auto_approve(config)
         cmd_report(config)
+        try:                                          # KPI 는 보조 — 실패가 daily 를 막지 않는다
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(str(config.get("project", {}).get("timezone", "Asia/Tokyo")))
+            cmd_kpi(config, send_report=datetime.now(tz).weekday() == 0)   # 월요일 주간 리포트
+        except Exception as e:                        # noqa: BLE001
+            log.warning("KPI 수집 실패(무시): %s", e)
         conn = ledger.connect(config=config)
         try:
             counts = ledger.counts(conn)
@@ -746,6 +871,8 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     pu = sub.add_parser("uploaded")
     pu.add_argument("video_id")
     pu.add_argument("--url", default=None)
+    pk = sub.add_parser("kpi")
+    pk.add_argument("--report", action="store_true", help="Slack 리포트 즉시 발송")
     sub.add_parser("daily")
     pl = sub.add_parser("upload")
     pl.add_argument("video_id")
@@ -778,6 +905,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_approve(config, args.video_id)
     elif args.cmd == "uploaded":
         cmd_uploaded(config, args.video_id, args.url)
+    elif args.cmd == "kpi":
+        for it in cmd_kpi(config, send_report=args.report):
+            d7 = it.get("d7_views")
+            tail = f"  (+{d7:,}/7일)" if d7 is not None else "  (측정 축적 중)"
+            print(f"{it['video_id']}  [{it.get('route') or '?'}]  "
+                  f"조회 {it.get('views') or 0:,}{tail}")
     elif args.cmd == "daily":
         cmd_daily(config, config_path=args.config)
     elif args.cmd == "upload":
