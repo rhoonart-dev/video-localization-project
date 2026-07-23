@@ -25,9 +25,10 @@ google-genai>=1.0       # 기본 provider=gemini (config.translate.provider)
 
 # === 인페인팅 백엔드 (engine/inpaint.py) — GPU(CUDA) 강력 권장 ===
 #   opencv 백엔드는 가중치 없이 동작하는 폴백(품질 낮음, 위 opencv-python로 충분).
-# torch>=2.2            # STTN / LaMa / ProPainter 공통 전제
+# torch>=2.2            # STTN / LaMa / ProPainter 공통 전제 — B 라우트 운영 머신엔 설치 필요
 # torchvision>=0.17
-# simple-lama-inpainting>=0.1   # LaMa (Apache-2.0) — 상업 사용 가장 안전
+# simple-lama-inpainting>=0.1   # LaMa (Apache-2.0) — 상업 사용 가장 안전. 가중치는 최초 실행 시 자동 캐시
+#   ⚠ 구버전 pillow 핀 때문에 `pip install --no-deps simple-lama-inpainting` 로 설치(2026-07-23 실측)
 #   STTN:       weights/sttn/       에 가중치 배치 (저장소+가중치 라이선스 확인)
 #   ProPainter: weights/propainter/ 에 가중치 배치
 #               ⚠ S-Lab NON-COMMERCIAL 가능성 — 상업 사용 전 반드시 확인

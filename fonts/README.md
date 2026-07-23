@@ -6,11 +6,15 @@
 - Noto Sans JP (Black / Bold / Medium / Regular)
 - Noto Serif JP (Bold)
 
-설치 예:
+설치 예 (2026-07-23 실배치 — noto-cjk 공식 JP 서브셋 OTF, font_map.yaml 과 일치):
 ```bash
-# Google Fonts 에서 Noto Sans JP / Noto Serif JP 내려받아 .ttf 를 이 폴더에 배치
-# 예) NotoSansJP-Black.ttf, NotoSansJP-Bold.ttf, NotoSansJP-Medium.ttf,
-#     NotoSansJP-Regular.ttf, NotoSerifJP-Bold.ttf
+cd fonts
+for w in Black Bold Medium Regular; do
+  curl -sL -o "NotoSansJP-$w.otf" \
+    "https://github.com/notofonts/noto-cjk/raw/main/Sans/SubsetOTF/JP/NotoSansJP-$w.otf"
+done
+curl -sL -o NotoSerifJP-Bold.otf \
+  "https://github.com/notofonts/noto-cjk/raw/main/Serif/SubsetOTF/JP/NotoSerifJP-Bold.otf"
 ```
 
 ## 주의
