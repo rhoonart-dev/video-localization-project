@@ -37,3 +37,6 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+_to_delete/
+*.patch
