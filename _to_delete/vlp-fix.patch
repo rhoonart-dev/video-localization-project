@@ -1,0 +1,63 @@
+diff --git a/config/pipeline.config.yaml b/config/pipeline.config.yaml
+index 577324c..8d323dd 100644
+--- a/config/pipeline.config.yaml
++++ b/config/pipeline.config.yaml
+@@ -38,6 +38,10 @@ levels:
+     render_mode: clean             # 텍스트 재렌더 없음 — 더빙(burn_dub_subtitle)이 자막 담당
+     inpaint_mode: auto
+     dub: true
++  BJ:                              # 번인 유지 + 일본어 병기 (사용자 결정 2026-08-12)
++    inpaint: false                 #   한국어 화면 텍스트를 지우지 않는다 → LaMa 가중치 불필요·빠름
++    render_mode: bilingual         #   일본어를 한국어 자막과 겹치지 않는 위치에 얹는다
++    dub: false                     #   오디오는 원문 그대로 (ショトコン: 오디오 현지화 불필요)
+ 
+ detect:
+   ocr_backend: paddleocr           # 한국어 소스 → paddleocr 권장(한글 인식 우수). rapidocr=경량 폴백
+@@ -200,7 +204,10 @@ dub:                               # Level C 한정. 게이트 통과 후에만.
+     max_synth_dur: 12.0            # 이 길이 초과면 환각으로 보고 재시도
+   xtts_model: tts_models/multilingual/multi-dataset/xtts_v2
+   #  ⚠ XTTS-v2 가중치 라이선스 = Coqui Public Model License(비상업). 상업 사용 전 확인.
+-  voice_id: null                   # elevenlabs 백엔드용 voice_id
++  # ⚠ voice_id 는 이 블록 위쪽(tts_backend 바로 아래)에 하나만 둔다. 여기 있던
++  #   `voice_id: null` 을 지웠다 — YAML 중복 키는 뒤엣것이 이겨서, 2026-08-13 elevenlabs
++  #   전환 커밋이 넣은 IVC voice_id 를 이 null 이 덮고 있었다. 그대로 두면 첫 합성에서
++  #   dub.py: `ValueError: elevenlabs 백엔드: voice_id 필요` 로 죽는다.
+   tts_model: eleven_multilingual_v2
+ 
+ select:
+@@ -229,6 +236,9 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 
+   require_llm: true                # LLM 전면 실패 시 실행 중단(열화 점수 고착 방지). false=정량만
+   comment_sample: 100              # 댓글 언어분석 표본(YOUTUBE_API_KEY 필요, 없으면 생략)
+   min_duration: 3                  # 초 — 미만 제외
++  force_route: C                   # 라우트 강제(2026-08-12 사용자 결정: 잔망루피는 전량 더빙).
++                                   #   설정 시 precheck 의 라우트 판정을 건너뛴다 — paddleocr
++                                   #   초기화 실패로 하루 0편이던 원인 제거. 비우면 자동 판정.
+   max_duration: 183                # 초 — Shorts 상한(3분, 2024-10 확대 기준)
+   weights:                         # 신호 가중치(없는 신호는 재정규화로 흡수)
+     views: 0.20                    # 조회수(log 정규화)
+diff --git a/src/autopilot.py b/src/autopilot.py
+index 8239c12..2a84543 100644
+--- a/src/autopilot.py
++++ b/src/autopilot.py
+@@ -429,7 +429,20 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
+             ledger.set_state(conn, vid, "processing")
+             try:
+                 video = _download(r, config)
+-                pre = precheck_mod.precheck(str(video), vid, config)
++                # 라우트 강제(사용자 결정 2026-08-12): 잔망루피는 전량 더빙(C)이 방침이라
++                # precheck 의 라우트 '판정'이 필요 없다. precheck 는 번인 OCR(paddleocr)과
++                # 언어 ASR 을 돌려 라우트를 고르는데, 답이 정해져 있으면 그 비용도 그 의존성도
++                # 무의미하다 — 실측(8/12): paddleocr 초기화 실패로 precheck 가 중단되어
++                # 하루 처리량이 0/1편이었다. 강제 시엔 건너뛰고 바로 그 라우트로 간다.
++                forced = str(ap.get("force_route") or "").strip().upper() or None
++                if forced and forced not in config.get("levels", {}):
++                    log.warning("force_route '%s' 는 config.levels 에 없음 — 자동 판정으로", forced)
++                    forced = None
++                if forced:
++                    pre = {"route": forced, "forced": True}
++                    log.info("라우트 강제: %s (precheck 생략)", forced)
++                else:
++                    pre = precheck_mod.precheck(str(video), vid, config)
+                 route = pre["route"]
+                 conn.execute("UPDATE videos SET level_guess=? WHERE video_id=?", (route, vid))
+                 conn.commit()

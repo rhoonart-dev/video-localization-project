@@ -108,9 +108,44 @@ def deepl_draft(texts: list[str], config: dict[str, Any]) -> dict[str, str]:
 
 
 # ── LLM 트랜스크리에이션 ─────────────────────────────────────────────────
+def batches(n: int, size: int) -> list[tuple[int, int]]:
+    """[0,n) 을 size 이하 구간으로 자른다. 순수 — 테스트 대상.
+    size<=0 이면 통짜 1구간(종전 동작)."""
+    if size <= 0 or n <= size:
+        return [(0, n)] if n else []
+    return [(i, min(i + size, n)) for i in range(0, n, size)]
+
+
 def transcreate(texts: list[str], config: dict[str, Any], hero: bool = False,
                 use_deepl: bool = False,
                 char_budgets: Optional[list[int]] = None) -> list[TranslationEntry]:
+    """자막 전체를 일본어로 트랜스크리에이션.
+
+    ⚠ 한 번에 다 보내면 긴 영상에서 응답이 max_tokens 에 잘려 JSON 이 안 닫힌다
+      (2026-08-12 실측: 혜미리예채파 5화 — 19,380자에서 잘려 parse_llm_json 이
+       'Unterminated string' 로 실패, localize 잡이 통째로 죽었다. max_tokens 8192).
+      항목 수에 비례해 커지는 응답이라 상한을 올려도 더 긴 영상에서 같은 벽을 만난다.
+      → translate.batch_size 개씩 나눠 보내고 결과를 합친다. 용어 일관성은 glossary
+        후처리와 매 배치에 들어가는 persona 가 지킨다."""
+    if not texts:
+        return []
+    tcfg0 = config.get("translate", {})
+    size = int(tcfg0.get("batch_size", 40) or 0)
+    spans = batches(len(texts), size)
+    if len(spans) > 1:
+        out: list[TranslationEntry] = []
+        for a, b in spans:
+            out += _transcreate_one(
+                texts[a:b], config, hero=hero, use_deepl=use_deepl,
+                char_budgets=(char_budgets[a:b] if char_budgets else None))
+        return out
+    return _transcreate_one(texts, config, hero=hero, use_deepl=use_deepl,
+                            char_budgets=char_budgets)
+
+
+def _transcreate_one(texts: list[str], config: dict[str, Any], hero: bool = False,
+                     use_deepl: bool = False,
+                     char_budgets: Optional[list[int]] = None) -> list[TranslationEntry]:
     if not texts:
         return []
     persona = load_persona(config)

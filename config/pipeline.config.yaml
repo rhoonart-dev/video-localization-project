@@ -76,7 +76,10 @@ translate:
   provider: gemini                 # gemini | anthropic (engine/llm.py 가 분기)
   model: gemini-3.5-flash          # 대량 트랜스크리에이션 기본(최신 GA flash, thinking off)
   hero_model: gemini-pro-latest    # hero 영상 등 고품질(최신 pro 추적, thinking 모드)
-  max_tokens: 8192                 # source/target/notes/flagged × 항목수 → 넉넉히(잘림 방지)
+  max_tokens: 16384                # source/target/notes/flagged × 항목수. batch_size 와 짝이다.
+  batch_size: 40                   # 한 번에 보낼 자막 항목 수(2026-08-12). 통짜로 보내면 긴
+                                   #   영상에서 응답이 잘려 JSON 이 안 닫힌다 — 실측: 혜미리예채파
+                                   #   5화가 19,380자에서 잘려 localize 가 죽었다. 0=통짜(종전).
   use_deepl_draft: false           # true 면 DeepL 초벌 병용(TRANSLATE_API_KEY 필요)
   deepl_endpoint: https://api-free.deepl.com/v2/translate
 
@@ -236,6 +239,9 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 �
   require_llm: true                # LLM 전면 실패 시 실행 중단(열화 점수 고착 방지). false=정량만
   comment_sample: 100              # 댓글 언어분석 표본(YOUTUBE_API_KEY 필요, 없으면 생략)
   min_duration: 3                  # 초 — 미만 제외
+  no_dialogue_fallback: BJ         # 대사가 없어 더빙이 성립하지 않으면 이 등급으로 내린다
+                                   #   (2026-08-12: 버리지 말고 자막이라도 입혀 내보낸다).
+                                   #   비우면 종전대로 그 영상은 실패 처리.
   force_route: C                   # 라우트 강제(2026-08-12 사용자 결정: 잔망루피는 전량 더빙).
                                    #   설정 시 precheck 의 라우트 판정을 건너뛴다 — paddleocr
                                    #   초기화 실패로 하루 0편이던 원인 제거. 비우면 자동 판정.

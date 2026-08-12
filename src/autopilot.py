@@ -384,6 +384,32 @@ def _dub_cmd(dub_py: str, video: str, video_id: str,
     return cmd
 
 
+# 대사 없음 폴백 — '전량 더빙' 방침의 현실적 경계(2026-08-12 실측: 루피 쇼츠 상당수가
+# 음악·효과음만이라 받아쓰기가 비고, 더빙이 성립하지 않는다).
+_NO_DIALOGUE = ("받아쓰기된 대사 없음", "대사 없는 영상")
+
+
+def is_no_dialogue(err) -> bool:
+    """더빙 실패가 '대사가 없어서'인가. 순수 — 테스트 대상.
+    다른 실패(가중치·API·타임아웃)를 조용히 자막으로 강등하지 않으려고 문구를 좁게 본다."""
+    b = str(err or "")
+    return any(s in b for s in _NO_DIALOGUE)
+
+
+def _dialogue_fallback(config: dict[str, Any], err) -> Optional[str]:
+    """대사 없음이면 내려갈 등급. 설정이 없거나 다른 실패면 None(= 그대로 실패)."""
+    if not is_no_dialogue(err):
+        return None
+    fb = str(config.get("autopilot", {}).get("no_dialogue_fallback") or "").strip().upper()
+    return fb if fb and fb in config.get("levels", {}) else None
+
+
+def _level_needs_render(config: dict[str, Any], level: str) -> bool:
+    """A(무변환)는 렌더가 없다 — 메타데이터만 만들면 된다. 순수 — 테스트 대상."""
+    opts = (config.get("levels", {}) or {}).get(level, {}) or {}
+    return bool(opts.get("inpaint")) or str(opts.get("render_mode", "")) != "subtitle"
+
+
 def _run_dub(video: pathlib.Path, video_id: str, config: dict[str, Any],
              config_path: Optional[str] = None) -> None:
     """Level C(더빙) — GPT-SoVITS 스택은 .venv-gsv(파이썬 3.11) 전용이라 subprocess."""
@@ -458,7 +484,24 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
                                   content_type=ap.get("content_type", "anime"),
                                   inpaint_backend=ap.get("inpaint_backend", "opencv"))
                 elif route == "C":
-                    _run_dub(video, vid, config, config_path)
+                    try:
+                        _run_dub(video, vid, config, config_path)
+                    except Exception as e:                       # noqa: BLE001
+                        fb = _dialogue_fallback(config, e)
+                        if not fb:
+                            raise
+                        # 대사 없는 쇼츠(음악·효과음만)는 더빙이 성립하지 않는다. 버리지 않고
+                        # 자막 경로로 내려 현지화는 해서 내보낸다(사용자 결정 2026-08-12).
+                        log.warning("대사 없음 → %s 로 폴백: %s", fb, vid)
+                        route = fb
+                        conn.execute("UPDATE videos SET level_guess=? WHERE video_id=?",
+                                     (route, vid))
+                        conn.commit()
+                        if _level_needs_render(config, fb):
+                            from src.process_video import process_video
+                            process_video(str(video), vid, fb, config,
+                                          content_type=ap.get("content_type", "anime"),
+                                          inpaint_backend=ap.get("inpaint_backend", "opencv"))
                 elif route == "BC":
                     # 먹방류(캡션+대사): 캡션은 유지(사용자 결정 2026-07-10 — 제거 불필요),
                     # 더빙 + 일본어 자막을 캡션 위로 회피 배치(dub 가 precheck.json bbox 사용)
