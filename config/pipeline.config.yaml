@@ -94,6 +94,12 @@ qa:
   motion_flag_threshold: 0.35      # 프레임 차분 비율 이상이면 고움직임 플래그
   sidebyside: true
 
+qa_compare:                        # 원본-결과 프레임 쌍 LLM 비전 비교(engine/qa_compare.py)
+  pairs: 3                         # 비교 시점 수(도입/중간/말미)
+  scale_w: 540                     # 프레임 축소 폭(토큰 절약)
+  # ⚠ 반드시 '원본 쌍' 비교로 쓸 것 — 결과 단독 검사는 원본 연출(상단 경계 클로즈업)을
+  #   잘림으로 오탐한다(맥6 실측 2026-08-05: 13편 중 7편 오탐 → 쌍 비교 후 0)
+
 encode:
   intermediate_codec: ffv1         # 무손실 중간본
   final_codec: libx264             # libx264 | libx265 | libsvtav1
@@ -111,6 +117,13 @@ upload:
 
 dub:                               # Level C 한정. 게이트 통과 후에만.
   tts_backend: gptsovits           # gptsovits(루피 음색 크로스링구얼 클로닝, 권장) | xtts | elevenlabs
+  # elevenlabs 백엔드 + IVC 클론 보이스(opt-in): src/voice_clone.py 로 voice_id 부트스트랩.
+  # 아래 설정은 맥6 청취 비교(2026-08-05)에서 채택된 값 — 미설정 시 종전 동작(SDK 기본).
+  # eleven_voice_settings:
+  #   stability: 0.35
+  #   similarity_boost: 1.0
+  #   style: 0.6
+  #   use_speaker_boost: true
   language: ja                     # 기본 합성 언어(세그별 영어 대사는 자동 감지해 en 유지)
   asr_vad_filter: false            # VAD 는 짧은 발화 드롭+타이밍뭉갬(2026-07-08 '요음!' 누락) → off.
                                    # 음악 오검출은 아래 할루시네이션 필터가 차단(no_speech/logprob)

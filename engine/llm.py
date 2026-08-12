@@ -37,6 +37,23 @@ def complete(system: str, user: str, config: dict, *, model: Optional[str] = Non
     raise ValueError(f"알 수 없는 LLM provider: {prov} (gemini|anthropic)")
 
 
+def complete_vision(system: str, user: str, images: list[tuple[bytes, str]], config: dict,
+                    *, model: Optional[str] = None, max_tokens: int = 1024) -> str:
+    """이미지+텍스트 멀티모달 단일 턴 → 응답 텍스트. images = [(bytes, mime), …].
+
+    qa_compare(원본-결과 프레임 쌍 비교) 등 비전 검사용. provider 분기는 complete 와 동일.
+    """
+    prov = provider(config)
+    model = model or resolve_model(config)
+    if not model:
+        raise ValueError("LLM 모델 미지정. config.translate.model 또는 LLM_MODEL 설정 필요.")
+    if prov == "gemini":
+        return _gemini_vision(system, user, images, model, max_tokens)
+    if prov == "anthropic":
+        return _anthropic_vision(system, user, images, model, max_tokens)
+    raise ValueError(f"알 수 없는 LLM provider: {prov} (gemini|anthropic)")
+
+
 def _gemini(system: str, user: str, model: str, max_tokens: int) -> str:
     try:
         from google import genai
@@ -51,6 +68,45 @@ def _gemini(system: str, user: str, model: str, max_tokens: int) -> str:
     resp = client.models.generate_content(
         model=model, contents=user, config=types.GenerateContentConfig(**cfg_kwargs))
     return resp.text or ""
+
+
+def _gemini_vision(system: str, user: str, images: list[tuple[bytes, str]],
+                   model: str, max_tokens: int) -> str:
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as e:
+        raise ImportError("google-genai 필요: pip install google-genai") from e
+    client = genai.Client(api_key=get_secret("LLM_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+                                             required=True))
+    parts = [types.Part.from_bytes(data=b, mime_type=m) for b, m in images]
+    cfg_kwargs = {"system_instruction": system, "max_output_tokens": max_tokens}
+    if "flash" in model:
+        cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    resp = client.models.generate_content(
+        model=model, contents=[*parts, user], config=types.GenerateContentConfig(**cfg_kwargs))
+    return resp.text or ""
+
+
+def _anthropic_vision(system: str, user: str, images: list[tuple[bytes, str]],
+                      model: str, max_tokens: int) -> str:
+    try:
+        import anthropic
+    except ImportError as e:
+        raise ImportError("anthropic 필요: pip install anthropic") from e
+    import base64
+
+    client = anthropic.Anthropic(api_key=get_secret("LLM_API_KEY", "ANTHROPIC_API_KEY",
+                                                    required=True))
+    content: list[dict] = [
+        {"type": "image", "source": {"type": "base64", "media_type": m,
+                                     "data": base64.b64encode(b).decode()}}
+        for b, m in images
+    ]
+    content.append({"type": "text", "text": user})
+    resp = client.messages.create(model=model, max_tokens=max_tokens, system=system,
+                                  messages=[{"role": "user", "content": content}])
+    return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 
 def _anthropic(system: str, user: str, model: str, max_tokens: int) -> str:
