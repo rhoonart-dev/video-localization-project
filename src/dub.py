@@ -465,10 +465,14 @@ def _synthesize_elevenlabs(text: str, voice_id: str, config: dict[str, Any]) -> 
     except ImportError as e:
         raise ImportError("elevenlabs 필요: pip install elevenlabs") from e
     client = ElevenLabs(api_key=key)
+    kwargs: dict[str, Any] = {}
+    settings = config.get("dub", {}).get("eleven_voice_settings")
+    if settings:  # IVC 클론 보이스용 튜닝(src/voice_clone.py 참고). 미설정 시 종전 동작.
+        kwargs["voice_settings"] = settings
     audio = client.text_to_speech.convert(
         voice_id=voice_id, text=text,
         model_id=config.get("dub", {}).get("tts_model", "eleven_multilingual_v2"),
-        output_format="mp3_44100_128")
+        output_format="mp3_44100_128", **kwargs)
     return b"".join(audio) if hasattr(audio, "__iter__") else audio
 
 
