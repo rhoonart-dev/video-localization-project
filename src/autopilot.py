@@ -429,7 +429,20 @@ def cmd_process(config: dict[str, Any], limit: Optional[int] = None,
             ledger.set_state(conn, vid, "processing")
             try:
                 video = _download(r, config)
-                pre = precheck_mod.precheck(str(video), vid, config)
+                # 라우트 강제(사용자 결정 2026-08-12): 잔망루피는 전량 더빙(C)이 방침이라
+                # precheck 의 라우트 '판정'이 필요 없다. precheck 는 번인 OCR(paddleocr)과
+                # 언어 ASR 을 돌려 라우트를 고르는데, 답이 정해져 있으면 그 비용도 그 의존성도
+                # 무의미하다 — 실측(8/12): paddleocr 초기화 실패로 precheck 가 중단되어
+                # 하루 처리량이 0/1편이었다. 강제 시엔 건너뛰고 바로 그 라우트로 간다.
+                forced = str(ap.get("force_route") or "").strip().upper() or None
+                if forced and forced not in config.get("levels", {}):
+                    log.warning("force_route '%s' 는 config.levels 에 없음 — 자동 판정으로", forced)
+                    forced = None
+                if forced:
+                    pre = {"route": forced, "forced": True}
+                    log.info("라우트 강제: %s (precheck 생략)", forced)
+                else:
+                    pre = precheck_mod.precheck(str(video), vid, config)
                 route = pre["route"]
                 conn.execute("UPDATE videos SET level_guess=? WHERE video_id=?", (route, vid))
                 conn.commit()
