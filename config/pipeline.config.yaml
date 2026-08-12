@@ -116,14 +116,16 @@ upload:
   made_for_kids: false             # ⚠ 정책 결정 반영 필요(COPPA) — 잔망루피=성인 밈 타깃 전제
 
 dub:                               # Level C 한정. 게이트 통과 후에만.
-  tts_backend: gptsovits           # gptsovits(루피 음색 크로스링구얼 클로닝, 권장) | xtts | elevenlabs
-  # elevenlabs 백엔드 + IVC 클론 보이스(opt-in): src/voice_clone.py 로 voice_id 부트스트랩.
-  # 아래 설정은 맥6 청취 비교(2026-08-05)에서 채택된 값 — 미설정 시 종전 동작(SDK 기본).
-  # eleven_voice_settings:
-  #   stability: 0.35
-  #   similarity_boost: 1.0
-  #   style: 0.6
-  #   use_speaker_boost: true
+  tts_backend: elevenlabs          # IVC 클론 보이스(2026-08-13 전환, 사용자 결정) | gptsovits | xtts
+                                   # 롤백 = 이 키를 gptsovits 로 되돌리면 끝(코드 변경 불필요)
+  voice_id: XCUaBo3FxL00wvRju0PX   # 'Zanmang Loopy JA' — 분리 보컬 발화 170초로 IVC 생성(2026-08-05).
+                                   # 재생성: python -m src.voice_clone ensure --reference <ref>
+  # 아래 설정은 맥6 청취 비교(A/B/C, 2026-08-05)에서 채택된 값.
+  eleven_voice_settings:
+    stability: 0.35
+    similarity_boost: 1.0
+    style: 0.6
+    use_speaker_boost: true
   language: ja                     # 기본 합성 언어(세그별 영어 대사는 자동 감지해 en 유지)
   asr_vad_filter: false            # VAD 는 짧은 발화 드롭+타이밍뭉갬(2026-07-08 '요음!' 누락) → off.
                                    # 음악 오검출은 아래 할루시네이션 필터가 차단(no_speech/logprob)
