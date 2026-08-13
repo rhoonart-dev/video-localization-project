@@ -66,12 +66,21 @@ def parse_ass_events(text: str) -> list[dict[str, Any]]:
     """ASS 본문 → [{start, end, text}]. Dialogue 줄만, 태그({\\...})·개행 태그는 걷어낸다.
 
     ai-video 가 만든 파일이 원료지만 Format 순서를 신뢰하지 않고 헤더에서 읽는다 —
-    빌더가 바뀌어도 여기가 조용히 어긋나지 않게."""
+    빌더가 바뀌어도 여기가 조용히 어긋나지 않게.
+
+    Format 은 [Events] 섹션 안의 것만 쓴다 — 실제 산출물은 [V4+ Styles] 에도
+    Format: 이 있어서(16필드), 그걸 집으면 Dialogue(10필드)가 전부 len 미달로
+    버려진다. 8/13 실측: 혜미리예채파 ep2 J 변환이 자막 0건·나레이션 0건."""
     fmt = None
+    section = ""
     out = []
     for line in (text or "").splitlines():
         line = line.strip()
-        if line.lower().startswith("format:") and fmt is None:
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            if section != "events":
+                fmt = None
+        elif line.lower().startswith("format:") and section in ("events", ""):
             fmt = [f.strip().lower() for f in line.split(":", 1)[1].split(",")]
         elif line.lower().startswith("dialogue:"):
             if fmt is None:
@@ -185,7 +194,10 @@ def convert(video: str, plan_path: str, out_path: str, config: dict[str, Any],
     from engine.translate import transcreate
 
     plan = json.loads(pathlib.Path(plan_path).read_text(encoding="utf-8"))
-    title = ((plan.get("layout") or {}).get("top_title") or "").strip()
+    # 제목의 개행은 번역 전에 한 줄로 편다(8/13 실측 ⑤): LLM 이 source 를 개행 없이
+    # 되돌려주면 transcreate 의 by_source 매칭이 빗나가 target="" 이 되고, 아래
+    # 폴백이 한국어 제목을 그대로 태운다. 일본어 줄바꿈은 wrap_jp 가 다시 잡는다.
+    title = re.sub(r"\s*\n\s*", " ", ((plan.get("layout") or {}).get("top_title") or "")).strip()
     raw = (plan.get("layout") or {}).get("canvas") or "1080x1920"
     w, h = (int(x) for x in raw.lower().split("x"))
     duration = _probe_duration(video)
@@ -198,14 +210,27 @@ def convert(video: str, plan_path: str, out_path: str, config: dict[str, Any],
     # 번역 — 제목 + 대사 + 나레이션을 한 번에(배치·용어집은 transcreate 가 처리)
     texts = ([title] if title else []) + [e["text"] for e in dlg] + [e["text"] for e in nar]
     ja_map: dict[str, str] = {}
+    fallback = 0
     if texts:
-        for ent in transcreate(texts, config):
-            ja_map[ent.source] = ent.target or ent.source
+        ents = transcreate(texts, config)
+        # transcreate 는 입력 순서·개수를 보존한다(항목별 append) — source 문자열
+        # 재대조가 아니라 인덱스로 잇는다. target 이 비면(LLM 이 source 를 변형해
+        # 되돌려 by_source 가 빗나간 경우 등) 소리 내고 원문 폴백을 센다.
+        for i, t in enumerate(texts):
+            tgt = (ents[i].target or "").strip() if i < len(ents) else ""
+            if not tgt:
+                fallback += 1
+                log.warning("번역 누락 폴백: %r", t[:40])
+            ja_map[t] = tgt or t
     ja_title = ja_map.get(title, title) if title else None
+    if ja_title and re.search(r"[가-힣]", ja_title):
+        # 제목이 한국어인 채 나가면 채널 정체성이 무너진다(8/13 실측 ⑤ — 사용자
+        # 스크린샷). 조용한 폴백 대신 잡을 죽여 재시도로 보낸다.
+        raise RuntimeError(f"제목 번역 실패 — 한글이 남아 있음: {ja_title[:60]!r}")
     for e in dlg + nar:
         e["text"] = ja_map.get(e["text"], e["text"])
-    log.info("번역 %d건 (제목 %s · 대사 %d · 나레이션 %d)",
-             len(texts), "O" if title else "X", len(dlg), len(nar))
+    log.info("번역 %d건 (제목 %s · 대사 %d · 나레이션 %d · 폴백 %d)",
+             len(texts), "O" if title else "X", len(dlg), len(nar), fallback)
 
     work = ensure_dir(pathlib.Path(out_path).parent)
     rcfg = config.get("render", {})
@@ -231,7 +256,8 @@ def convert(video: str, plan_path: str, out_path: str, config: dict[str, Any],
     if no_dub or not spans:
         pathlib.Path(out_path).unlink(missing_ok=True)
         pathlib.Path(burned).rename(out_path)
-        return {"final": str(out_path), "narration_cues": len(spans), "dub": False}
+        return {"final": str(out_path), "narration_cues": len(spans), "dub": False,
+                "subs": len(dlg), "tr_fallback": fallback}
 
     from src.dub import _fit_audio, synthesize_segment
     seg_files = []
@@ -259,7 +285,7 @@ def convert(video: str, plan_path: str, out_path: str, config: dict[str, Any],
         raise RuntimeError(f"오디오 합성 실패: {(r.stderr or '')[-300:]}")
     pathlib.Path(burned).unlink(missing_ok=True)
     return {"final": str(out_path), "narration_cues": len(spans), "dub": True,
-            "tts_segments": len(seg_files)}
+            "subs": len(dlg), "tr_fallback": fallback, "tts_segments": len(seg_files)}
 
 
 def _parse_args(argv=None):

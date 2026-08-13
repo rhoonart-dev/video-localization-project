@@ -71,3 +71,29 @@ def test_duck_and_mix_graph():
     assert "amix=inputs=3" in g and g.endswith("[aout]")
     g0 = audio_graph(0, [], 0.3)
     assert "amix" not in g0 and g0.endswith("[aout]")    # cue 없음 — 원본 그대로
+
+
+def test_parse_ass_real_output_with_styles_section():
+    """8/13 실측 ④: 실제 산출물엔 [V4+ Styles] 의 Format(16필드)이 먼저 온다.
+    그걸 집으면 Dialogue(10필드)가 전부 len 미달로 버려져 자막 0건이 된다 —
+    혜미리예채파 ep2 J 변환이 제목만 남고 자막·나레이션이 통째로 빠진 원인."""
+    from src.convert_short import parse_ass_events
+    text = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Jalnan 2 TTF,70,&H00EBCE87,&H00000000,&H00000000,0,0,1,2,0,2,80,80,580,0
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:04.16,Default,,,,,, 설레며 도착한 힐링 하우스
+Dialogue: 0,0:00:37.19,0:00:40.65,Default,,,,,, 한순간 실수로 전재산 0원\\N됨
+"""
+    ev = parse_ass_events(text)
+    assert len(ev) == 2
+    assert ev[0]["text"] == "설레며 도착한 힐링 하우스"
+    assert abs(ev[0]["start"] - 1.0) < 0.01 and abs(ev[1]["end"] - 40.65) < 0.01
+    assert "\\N" not in ev[1]["text"] and "됨" in ev[1]["text"]
