@@ -119,6 +119,19 @@ def _reassemble(config, work: Path, fps: float, render_mode: str, render_out: di
             codec=enc.get("final_codec", "libx264"),
             pix_fmt=enc.get("pixel_format", "yuv420p"), crf=int(enc.get("final_crf", 18)))
         return common.mux_audio(encoded, audio, work / "final_draft.mp4")
+    if render_mode == "bilingual":
+        # 번인(2026-08-12 수정): render 는 ja_bilingual.ass 를 만들기만 했고 아무도 굽지 않아,
+        # 최종본이 '원본 그대로'였다 — 실측: 혜미리예채파 5화 결과물에 일본어 자막이 없었다.
+        # 쇼츠는 사이드카 자막 트랙을 못 쓰므로 여기서 원본 위에 덧입힌다(한국어는 그대로 남는다).
+        bi = render_out.get("bilingual_ass")
+        if bi and Path(bi).exists():
+            fonts = config.get("paths", {}).get("fonts_dir")
+            return common.burn_subtitles(
+                src_video, bi, work / "final_draft.mp4",
+                fonts_dir=resolve_path(fonts) if fonts else None,
+                crf=int(enc.get("final_crf", 18)),
+                pix_fmt=enc.get("pixel_format", "yuv420p"))
+        log.warning("bilingual 인데 ja_bilingual.ass 가 없다 — 원본 그대로 내보낸다(자막 없음)")
     # 자막 모드: 원본 화질 유지 → 원본을 그대로 최종본으로(자막은 sidecar ja.ass/srt)
     log.info("자막 모드: 원본 영상 유지 + ja.ass/ja.srt 사이드카(업로더가 자막 추가/번인).")
     return common.mux_audio(src_video, None, work / "final_draft.mp4")
