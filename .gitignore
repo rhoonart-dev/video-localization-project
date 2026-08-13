@@ -40,3 +40,6 @@ venv/
 
 _to_delete/
 *.patch
+results/
+spike/
+localize_backup_ko/

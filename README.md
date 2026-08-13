@@ -100,3 +100,28 @@ pytest -q                      # pytest 설치 시
 - 라이선스 확보 완료 전제(© ICONIX / OCON / EBS / SKbroadband — 필요 시 설명란).
 - GPU 비용·품질을 파일럿(10편)에서 SaaS 와 비교 후 확장 판단(자체 구축이 항상 싸지 않다).
 - 캐릭터 어미(한국 "~뤂" 대응)는 `config/persona.md` 에서 1개 확정 후 전 영상 일관 적용.
+---
+
+## scene-rerender 모드 (ショトコン · 혜미리예채파, 2026-08-13 편입)
+
+위 파이프라인이 **완성 영상을 후처리**(OCR→인페인팅→재합성)하는 것과 달리, ai-video 가 만든
+쇼츠는 **생성 job 디렉토리(체크포인트)가 그대로 남아 있다.** 자막·제목·TTS 를 그 데이터 계층에서
+일본어로 바꾼 뒤 클린 재렌더하면 원어 텍스트가 애초에 화면에 그려지지 않고, 컷이 프레임 단위로
+재현돼 자막 싱크가 보장된다. 지울 글자가 없으니 OCR·인페인팅·가중치도 쓰지 않는다.
+
+```bash
+# 생성 노드(job 디렉토리 + 원본 소스가 있는 노드)에서 ai-video venv 로 실행
+"$AI_VIDEO_ROOT/.venv/bin/python" scripts/localize_run.py --job-dir <ai-video job dir>
+```
+
+- 파이프라인·규약: [docs/scene-rerender/PLAN.md](docs/scene-rerender/PLAN.md)
+  (L0~L5 단계, 텔롭 타이밍 프레임 대조, 제목 11자 규칙, 컷 재현 노브 등)
+- 채널·작품·용어집·TTS 보이스: `config/locales.json`
+- 전제: 같은 노드의 ai-video·brain 체크아웃(엔진 경로는 **형제 디렉토리 추론** — 환경변수
+  `AI_VIDEO_ROOT`/`BRAIN_ROOT` 로 덮을 수 있다)과 `GEMINI_API_KEY`(워커는 `/etc/ves/node.env`,
+  로컬은 brain `.env` 폴백). 일본어 폰트는 실행 시 macOS 시스템 폰트에서 자동 프로비저닝.
+- 테스트(순수 로직): `python -m pytest tests/test_scene_rerender.py -q`
+- ves-orchestrator 연동: localize 잡이 `mode=scene_rerender` 로 이 스크립트를 부른다 —
+  성공 마커 `<job_dir>/localize_ja/metadata.json`, 산출 `<job_dir>/shorts.mp4` 교체본
+  (한국어 원본은 `localize_backup_ko/`·`shorts_ko.mp4` 로 보존).
+  배경·설계: [docs/scene-rerender/ORCHESTRATOR_INTEGRATION.md](docs/scene-rerender/ORCHESTRATOR_INTEGRATION.md)
