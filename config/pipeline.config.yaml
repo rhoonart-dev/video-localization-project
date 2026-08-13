@@ -275,5 +275,8 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 �
     per_day: 1                     # 하루 자동 선택 편수(공개 슬롯도 하루 1편 페이스)
     min_score: 0.45                # 미만이면 자동 선택 안 함 — 후보 고갈 시 사람에게 알림만
   auto_approve:
-    enabled: true
-    require_qa_pass: true          # qa=hold 는 자동 승인 제외(사람 검수) — pass 만 업로드
+    enabled: false                 # 관제 검수함이 승인 게이트다(사용자 결정 8/12: "승인하면
+                                   # 올라가게") — 켜면 사람 승인 전에 업로드·예약까지 가버려
+                                   # 검수함 카드가 장식이 된다(8/14 실측: 401 이 아니었으면
+                                   # 「볼살 뀨~」가 검수 없이 예약 공개될 뻔했다)
+    require_qa_pass: true          # (재활성 시) qa=hold 는 자동 승인 제외 — pass 만 업로드
