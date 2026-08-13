@@ -38,7 +38,8 @@ google-genai>=1.0       # 기본 provider=gemini (config.translate.provider)
 
 # === 더빙 (src/dub.py, Level C 한정) — 자막 또는 대사 영상 기반 일본어 더빙 ===
 #   기본 백엔드 xtts = 오픈소스 보이스 클로닝(한국어 샘플→일본어 크로스링구얼).
-# faster-whisper>=1.0          # 영상→대사 받아쓰기(ASR, --video 플로우)
+faster-whisper>=1.0            # 영상→대사 받아쓰기(ASR) — dub 전사·언어감지 필수.
+                               # 주석 상태라 pip sync 가 안 깔아 A 루트가 죽었다(8/14 실측)
 # coqui-tts>=0.27              # XTTS-v2 보이스 클로닝(ja/ko 지원). ⚠ 가중치=Coqui Public License(비상업)
 # torchaudio                   # XTTS 오디오 IO
 # torchcodec                   # torch 2.9+ 오디오 디코딩
