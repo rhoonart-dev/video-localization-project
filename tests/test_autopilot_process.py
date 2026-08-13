@@ -65,6 +65,9 @@ def test_final_video_for_route():
         (base / "final_dubbed_subbed.mp4").write_bytes(b"x")  # 자막 번인본이 우선
         assert final_video_for("C", base).name == "final_dubbed_subbed.mp4"
         assert final_video_for("A", base) is None             # A = 무변환(원본 사용)
+        # BJ(병기)도 final_draft.mp4 — 지도에 없으면 approve 가 "산출 영상 없음"으로
+        # 죽는다(8/14 실측: 대사 없음 폴백 2건 연속)
+        assert final_video_for("BJ", base).name == "final_draft.mp4"
 
 
 def test_build_upload_text_contents():

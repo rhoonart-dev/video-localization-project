@@ -156,6 +156,9 @@ def route_verdict(config: dict[str, Any], route: str,
 def final_video_for(route: str, base: pathlib.Path) -> Optional[pathlib.Path]:
     """라우트별 최종 산출 영상. A(무변환)는 None — 원본을 그대로 쓴다."""
     names = {"B": ["final_draft.mp4"],
+             "BJ": ["final_draft.mp4"],   # 병기 자막도 같은 파일에 굽는다(8/14 실측:
+             #   대사 없음 → BJ 폴백이 qa=pass 로 만들어 놓고 approve 가 "산출 영상
+             #   없음"으로 죽었다 — o3HEuV8iNPE·7wl_x-BEBzs 연속 2건)
              "C": ["final_dubbed_subbed.mp4", "final_dubbed.mp4"],
              "BC": ["final_dubbed_subbed.mp4", "final_dubbed.mp4"]}.get(route, [])
     for n in names:
