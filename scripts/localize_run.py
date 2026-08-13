@@ -663,6 +663,38 @@ def l4_render(job: Path, wcfg: dict, locale_cfg: dict, out_dir: Path):
 
 # ─────────────────────────── L5 메타데이터 ───────────────────────────
 
+def build_ko_ja_pairs(backup: Path, out_dir: Path, translation: dict,
+                      max_items: int = 40) -> dict:
+    """한글⇄일본어 대역(8/14 사용자 요청) — 관제 검수 카드에서 일본어 제목·자막을
+    한글과 나란히 본다. 원문은 백업(KO)·L2 텔롭에서, 번역은 translation 에서.
+    실패는 조용히 비운다(대역은 검수 편의지 렌더 정본이 아니다). 순수 — 테스트 대상."""
+    pairs = {"top_title": None, "subs": [], "telops": []}
+    try:
+        ep = json.loads((backup / "edit_plan.json").read_text(encoding="utf-8"))
+        ko = ((ep.get("layout") or {}).get("top_title") or "").strip()
+        pairs["top_title"] = {"ko": ko or None, "ja": translation.get("top_title_ja")}
+    except Exception:
+        pairs["top_title"] = {"ko": None, "ja": translation.get("top_title_ja")}
+    try:
+        segs = json.loads((backup / "subtitle_segments.json").read_text(encoding="utf-8"))
+        for seg, tr in list(zip(segs, translation.get("segments") or []))[:max_items]:
+            pairs["subs"].append({"start": seg.get("start_sec"),
+                                  "ko": seg.get("text"), "ja": tr.get("ja")})
+    except Exception:
+        pass
+    try:
+        telops = json.loads((out_dir / "onscreen.json").read_text(encoding="utf-8"))
+        by_idx = {t.get("index"): t for t in (translation.get("telops") or [])}
+        for i, t in enumerate(telops[:max_items]):
+            tr = by_idx.get(i) or {}
+            if tr.get("use") is False:
+                continue
+            pairs["telops"].append({"ko": t.get("text_ko"), "ja": tr.get("ja")})
+    except Exception:
+        pass
+    return pairs
+
+
 def l5_metadata(job: Path, translation: dict, wcfg: dict, out_dir: Path):
     hashtags = list(dict.fromkeys(wcfg.get("hashtags_base", []) + translation.get("hashtags_extra", [])))
     desc_lines = [translation["description_ja"], ""]
@@ -674,6 +706,8 @@ def l5_metadata(job: Path, translation: dict, wcfg: dict, out_dir: Path):
         "tags": [h.lstrip("#") for h in hashtags],
         "top_title_burned": translation["top_title_ja"],
         "notes": translation.get("notes", []),
+        # 한글 대역(8/14) — 검수 카드가 그대로 내려받아 보여준다
+        "ko_ja_pairs": build_ko_ja_pairs(job / "localize_backup_ko", out_dir, translation),
         "_publish": "publish_youtube.py --title 로 제목 오버라이드. 설명란 필수 고지(권리)는 "
                     "publish_youtube 가 laeebly 기준으로 별도 추가하므로 여기 description 은 참고용 본문.",
     }
