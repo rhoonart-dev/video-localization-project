@@ -1,232 +1,277 @@
-"""ai-video 쇼츠 일본어 변환 (ショトコン, 2026-08-13 사용자 결정) — ai-video 무변경.
+"""convert_short — ai-video 본문에 일본어 제목·자막·TTS 를 새로 입힌다 (등급 J, 2026-08-13 v2).
 
-번역은 이 프로젝트 담당이다(사용자 결정). ai-video 가 만든 한국어 쇼츠(shorts.mp4)와
-run 산출물 edit_plan.json 을 받아 일본어판을 만든다:
+## 분업 (사용자 결정 8/13: "쇼츠 내용만 가지고 와서 제목·자막·TTS 는 일본어로 렌더")
 
-  · 영상 안 제목(layout.top_title)  → 일본어로 교체
-  · 대사 자막(timeline[].subtitle)  → 일본어로 교체 (원본 방송 오디오는 그대로 — 자막으로만)
-  · TTS 나레이션 구간(use_original_audio=false) → 한국어 보컬만 걷어내고 일본어 TTS 로 교체
-  · 노래·배경음·리액션 → 원본 유지
+ai-video 는 `--no-subtitles --no-tts-subtitles --no-title-overlay --no-tts-audio` 로
+**내용까지만** 만든다: 본문 영상 + 원본 오디오. 텍스트도 KR TTS 오디오도 없다.
+대신 run 폴더에 타이밍 원료를 남긴다 — 이 모듈은 그걸 받아 일본어판을 만든다.
 
-OCR 이 필요 없다 — 텍스트·타이밍·믹스 게인이 전부 edit_plan 에 있다(ai-video pipeline.py 가
-run 마다 기록). 원 텍스트가 놓인 밴드는 블러 배경 위라, 강한 재블러로 지우고 그 위에
-일본어를 얹는다(LaMa 인페인트 불필요).
+  edit_plan.json       → 제목 텍스트(layout.top_title) · 오디오 게인
+  subtitles.ass        → 대사 자막 텍스트+타이밍 (원본 오디오 전사)
+  tts_subtitles.ass    → 나레이션 텍스트+타이밍 (cue 단위)
 
-⚠ 좌표 규약: edit_plan 의 clip_start/end_sec 은 '원본 방송' 좌표다. 출력 쇼츠 좌표는
-  클립을 순서대로 이어붙인 누적합으로 계산한다(output_timeline) — ai-video 몽타주 규약.
+## v1(블러 방식)을 버린 이유 — 8/13 실물 실측 세 가지
+
+  ① 제목 밴드 블러가 실물 2줄 제목을 반쯤 놓쳤고, 일본어 제목은 줄바꿈 없이 화면 밖으로
+  ② 나레이션 대본 전문이 타이밍 분할 없이 한 덩어리 자막으로 화면을 덮었다
+  ③ KR TTS 가 원본 오디오에 이미 믹스되어 있어 일본어로 교체할 방법이 없었다
+     (edit_plan 의 use_original_audio 는 나레이션 구간 표시가 아니었다 — narration_spans: 0)
+
+v2 는 지우지 않는다. 애초에 없는 화면에 그리고, 없는 오디오를 얹는다.
+
+## 오디오
+
+원본 오디오는 그대로 두고, 나레이션 cue 구간만 덕킹(기본 0.3배) 후 일본어 TTS 를 얹는다.
+TTS 는 ElevenLabs(채널 voice_id 필수 — 잔망루피 클론이 전역 기본값이라 명시 없이는 거부),
+cue 길이에 _fit_audio 로 맞춘다(과길이 환각 차단 — dub.py 와 같은 장치).
 """
 from __future__ import annotations
 
-import argparse
+import json
 import pathlib
+import re
 import subprocess
 import sys
+from typing import Any, Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from typing import Any, Optional  # noqa: E402
-
-from engine.common import ensure_dir, get_logger, load_config, read_json, resolve_path  # noqa: E402
-from engine.render import build_ass  # noqa: E402
+from engine.common import ensure_dir, get_logger, load_config, resolve_path  # noqa: E402
 
 log = get_logger("convert_short")
 
+_ASS_TIME = re.compile(r"^(\d+):(\d{2}):(\d{2})[.:](\d{2})$")
+
 
 # ───────── 순수 (테스트 대상) ─────────
-def output_timeline(plan: dict[str, Any]) -> list[dict[str, Any]]:
-    """edit_plan.timeline(원본 좌표) → 출력 쇼츠 좌표의 클립 목록.
+def ass_time_to_sec(t: str) -> float:
+    """'0:00:12.34' → 12.34초. ASS 는 센티초 2자리."""
+    m = _ASS_TIME.match(t.strip())
+    if not m:
+        raise ValueError(f"ASS 시각 형식 아님: {t!r}")
+    h, mi, s, cs = (int(g) for g in m.groups())
+    return h * 3600 + mi * 60 + s + cs / 100.0
 
-    [{start, end, subtitle, narration}] — start/end 는 출력 영상 기준(누적합).
-    narration = use_original_audio 가 false 인 구간(ai-video TTS 나레이션이 얹힌 곳)."""
-    out, t = [], 0.0
-    for c in plan.get("timeline") or []:
-        dur = max(0.0, float(c.get("clip_end_sec", 0)) - float(c.get("clip_start_sec", 0)))
-        if dur <= 0:
-            continue
-        out.append({"start": round(t, 3), "end": round(t + dur, 3),
-                    "subtitle": (c.get("subtitle") or "").strip(),
-                    "narration": not c.get("use_original_audio", True)})
-        t += dur
+
+def sec_to_ass_time(sec: float) -> str:
+    sec = max(0.0, float(sec))
+    h = int(sec // 3600); mi = int(sec % 3600 // 60)
+    s = int(sec % 60); cs = int(round(sec % 1 * 100))
+    if cs == 100:
+        s, cs = s + 1, 0
+    return f"{h}:{mi:02d}:{s:02d}.{cs:02d}"
+
+
+def parse_ass_events(text: str) -> list[dict[str, Any]]:
+    """ASS 본문 → [{start, end, text}]. Dialogue 줄만, 태그({\\...})·개행 태그는 걷어낸다.
+
+    ai-video 가 만든 파일이 원료지만 Format 순서를 신뢰하지 않고 헤더에서 읽는다 —
+    빌더가 바뀌어도 여기가 조용히 어긋나지 않게."""
+    fmt = None
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.lower().startswith("format:") and fmt is None:
+            fmt = [f.strip().lower() for f in line.split(":", 1)[1].split(",")]
+        elif line.lower().startswith("dialogue:"):
+            if fmt is None:
+                fmt = ["layer", "start", "end", "style", "name",
+                       "marginl", "marginr", "marginv", "effect", "text"]
+            vals = line.split(":", 1)[1].split(",", len(fmt) - 1)
+            if len(vals) < len(fmt):
+                continue
+            row = dict(zip(fmt, vals))
+            raw = row.get("text", "")
+            clean = re.sub(r"\{[^}]*\}", "", raw).replace("\\N", " ").replace("\\n", " ").strip()
+            if not clean:
+                continue
+            out.append({"start": ass_time_to_sec(row["start"]),
+                        "end": ass_time_to_sec(row["end"]), "text": clean})
+    out.sort(key=lambda e: e["start"])
     return out
 
 
-def collect_texts(plan: dict[str, Any], timeline: list[dict[str, Any]]) -> list[str]:
-    """번역할 원문 목록(중복 제거, 순서 유지): 제목 + 클립 자막."""
-    seen, out = set(), []
-    title = ((plan.get("layout") or {}).get("top_title") or "").strip()
-    for t in [title] + [c["subtitle"] for c in timeline]:
-        if t and t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+def wrap_jp(text: str, max_chars: int = 14, max_lines: int = 3) -> str:
+    """일본어 줄바꿈(문자 수 기준 — CJK 는 단어 경계가 없다). 넘치면 뒷줄 말줄임.
+    8/13 실측 ①의 재발 방지: 제목이 한 줄로 화면 밖까지 뻗었다."""
+    t = (text or "").strip()
+    lines = []
+    while t and len(lines) < max_lines:
+        lines.append(t[:max_chars])
+        t = t[max_chars:]
+    if t:
+        lines[-1] = lines[-1][:-1] + "…"
+    return "\\N".join(lines)
 
 
-def narration_spans(timeline: list[dict[str, Any]],
-                    min_gap: float = 0.25) -> list[tuple[float, float]]:
-    """나레이션 구간(출력 좌표) — 인접 구간은 합친다(오디오 필터 표현식을 짧게)."""
-    spans: list[tuple[float, float]] = []
-    for c in timeline:
-        if not c["narration"]:
-            continue
-        if spans and c["start"] - spans[-1][1] <= min_gap:
-            spans[-1] = (spans[-1][0], c["end"])
-        else:
-            spans.append((c["start"], c["end"]))
-    return spans
+def build_ja_ass(title: Optional[str], dlg_events: list[dict[str, Any]],
+                 nar_events: list[dict[str, Any]], w: int, h: int,
+                 duration: float, font: str = "Noto Sans CJK JP",
+                 title_max_chars: int = 14, sub_max_chars: int = 16) -> str:
+    """일본어 ASS 한 장: 제목(상단 밴드 고정) + 대사 자막(하단) + 나레이션 자막(중하단).
+
+    위치는 ai-video 기본 레이아웃(상단 밴드 ~톱 21%, 하단 라벨 밴드)과 맞춘다:
+      제목: an8, 상단 밴드 안(MarginV = h*0.045)
+      나레이션: an2, 본문 하단(MarginV = h*0.24) — 하단 라벨 밴드 위
+      대사: an2, 맨 아래(MarginV = h*0.13)"""
+    def ev(style, start, end, text):
+        return f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},{style},,0,0,0,,{text}"
+
+    ts = int(h * 0.036); ss = int(h * 0.026); ns = int(h * 0.028)
+    head = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {w}
+PlayResY: {h}
+WrapStyle: 2
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, BorderStyle
+Style: JTitle,{font},{ts},&H00FFFFFF,&H00000000,&H96000000,1,3,1,8,40,40,{int(h*0.045)},1
+Style: JNarr,{font},{ns},&H00FFFFFF,&H00000000,&H00000000,1,3,1,2,40,40,{int(h*0.24)},1
+Style: JDlg,{font},{ss},&H0000FFFF,&H00000000,&H00000000,1,3,1,2,40,40,{int(h*0.13)},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines = []
+    if (title or "").strip():
+        lines.append(ev("JTitle", 0, duration, wrap_jp(title, title_max_chars, 3)))
+    for e in nar_events:
+        lines.append(ev("JNarr", e["start"], e["end"], wrap_jp(e["text"], sub_max_chars, 2)))
+    for e in dlg_events:
+        lines.append(ev("JDlg", e["start"], e["end"], wrap_jp(e["text"], sub_max_chars, 2)))
+    return head + "\n".join(lines) + "\n"
 
 
-def canvas_size(plan: dict[str, Any], default: tuple[int, int] = (1080, 1920)) -> tuple[int, int]:
-    """layout.canvas '1080x1920' → (w, h). 못 읽으면 쇼츠 표준."""
-    raw = str((plan.get("layout") or {}).get("canvas") or "")
-    try:
-        w, h = raw.lower().split("x")
-        return int(w), int(h)
-    except ValueError:
-        return default
+def duck_expr(spans: list[tuple[float, float]], gain: float = 0.3) -> str:
+    """나레이션 구간만 원본 오디오를 gain 배로 — 밖에서는 1.0(원본 그대로).
+    volume enable 식. 순수 — 테스트 대상."""
+    if not spans:
+        return ""
+    cond = "+".join(f"between(t,{s:.3f},{e:.3f})" for s, e in spans)
+    return f"volume={gain}:enable='{cond}'"
 
 
-def title_band(w: int, h: int) -> tuple[int, int, int, int]:
-    """제목 밴드 (x, y, w, h) — 쇼츠 레이아웃 상단 블러 밴드. 채널 디자인 좌표를 따로
-    받기 전의 기본값: 상단 4%~16%. v1 실측 후 조정한다."""
-    return 0, int(h * 0.04), w, int(h * 0.12)
-
-
-def subtitle_band(w: int, h: int) -> tuple[int, int, int, int]:
-    """자막 밴드 — 하단 72%~88% (ai-video 자막·TTS 자막이 놓이는 영역)."""
-    return 0, int(h * 0.72), w, int(h * 0.16)
-
-
-def blur_filter(boxes: list[tuple[int, int, int, int]], strength: int = 24) -> str:
-    """밴드들을 강블러로 지우는 ffmpeg filter_complex. 텍스트가 블러 배경 위라
-    강한 재블러만으로 읽을 수 없게 뭉개진다 — 인페인트 대체.
-    입력 [0:v] → 출력 [v]. 순수 — 테스트 대상."""
-    if not boxes:
-        return "[0:v]null[v]"
-    parts, cur = [], "0:v"
-    for i, (x, y, bw, bh) in enumerate(boxes):
-        nxt = "v" if i == len(boxes) - 1 else f"s{i}"
-        parts.append(f"[{cur}]split[a{i}][b{i}]")
-        parts.append(f"[b{i}]crop={bw}:{bh}:{x}:{y},boxblur={strength}:2[c{i}]")
-        parts.append(f"[a{i}][c{i}]overlay={x}:{y}[{nxt}]")
-        cur = nxt
+def audio_graph(n_tts: int, spans: list[tuple[float, float]], gain: float = 0.3) -> str:
+    """[0:a](원본) + [1..n](TTS 파일) → [aout]. adelay 로 cue 시작에 배치, amix.
+    순수 — 테스트 대상."""
+    duck = duck_expr(spans, gain)
+    parts = [f"[0:a]{duck or 'anull'}[bed]"]
+    ins = "[bed]"
+    if n_tts:
+        for i, (s, _e) in enumerate(zip([sp[0] for sp in spans], range(n_tts))):
+            ms = int(spans[i][0] * 1000)
+            parts.append(f"[{i+1}:a]adelay={ms}|{ms}[tts{i}]")
+        ins = "[bed]" + "".join(f"[tts{i}]" for i in range(n_tts))
+        parts.append(f"{ins}amix=inputs={n_tts+1}:duration=first:normalize=0[aout]")
+    else:
+        parts.append("[bed]anull[aout]")
     return ";".join(parts)
 
 
-def ja_events(timeline: list[dict[str, Any]], ja: dict[str, str],
-              title: str, total: float) -> list[dict[str, Any]]:
-    """일본어 ASS 이벤트: 제목(상단, 전체 길이) + 클립 자막(하단). 순수 — 테스트 대상.
-    번역이 빈 항목은 원문 유지(빈 자막을 태우지 않는다 — flagged 는 검수에서 본다)."""
-    ev = []
-    if title:
-        ev.append({"start": 0.0, "end": round(total, 3),
-                   "text": ja.get(title) or title, "position": "top-center"})
-    for c in timeline:
-        if c["subtitle"]:
-            ev.append({"start": c["start"], "end": c["end"],
-                       "text": ja.get(c["subtitle"]) or c["subtitle"],
-                       "position": "bottom-center"})
-    return ev
-
-
-def mute_expr(spans: list[tuple[float, float]]) -> str:
-    """ffmpeg volume enable 식(구간 안=참). dub._mute_spans 와 같은 규약. 순수."""
-    return "+".join(f"between(t,{s:.3f},{e:.3f})" for s, e in spans)
-
-
 # ───────── 실행부 ─────────
+def _probe_duration(path: str) -> float:
+    r = subprocess.run(["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+    try:
+        return float(r.stdout.strip())
+    except (ValueError, AttributeError):
+        return 0.0
+
+
 def convert(video: str, plan_path: str, out_path: str, config: dict[str, Any],
             voice_id: Optional[str] = None, no_dub: bool = False,
-            blur_subs: bool = False) -> dict[str, Any]:
-    plan = read_json(plan_path)
-    timeline = output_timeline(plan)
-    if not timeline:
-        raise SystemExit(f"edit_plan.timeline 비어 있음: {plan_path}")
-    w, h = canvas_size(plan)
-    title = ((plan.get("layout") or {}).get("top_title") or "").strip()
-    total = timeline[-1]["end"]
-    work = ensure_dir(pathlib.Path(out_path).parent)
-
-    # [1] 번역 — 이 프로젝트의 트랜스크리에이션(페르소나·용어집·배치)을 그대로 쓴다
+            subs_path: Optional[str] = None, tts_subs_path: Optional[str] = None) -> dict[str, Any]:
     from engine.translate import transcreate
-    texts = collect_texts(plan, timeline)
-    entries = transcreate(texts, config)
-    ja = {e.source: e.target for e in entries if e.target}
-    log.info("번역 %d/%d건 (빈 결과는 원문 유지·flagged)", len(ja), len(texts))
 
-    # [2] 화면 — 원 텍스트 밴드 재블러 + 일본어 ASS 번인 (원본 오디오는 이 단계에서 유지)
-    ass = work / "ja_convert.ass"
-    ass.write_text(build_ass(ja_events(timeline, ja, title, total), w, h,
-                             line_max_chars=int(config.get("render", {})
-                                                .get("line_max_chars", 16))),
-                   encoding="utf-8")
-    fonts = resolve_path(config.get("paths", {}).get("fonts_dir", "fonts"))
-    # 새 흐름(8/13): generate 가 --no-subtitles --no-tts-subtitles 로 돌아 자막이 애초에
-    # 없다 — 제목 밴드만 지우면 된다(영상 본문 위를 블러할 일이 없다). blur_subs 는
-    # 자막이 이미 구워진 구 run 호환용.
-    boxes = [title_band(w, h)] + ([subtitle_band(w, h)] if blur_subs else [])
-    vf = blur_filter(boxes) + f";[v]ass={ass}:fontsdir={fonts}[vo]"
-    video_ja = work / "video_ja.mp4"
-    subprocess.run(["ffmpeg", "-y", "-i", str(video), "-filter_complex", vf,
-                    "-map", "[vo]", "-map", "0:a?", "-c:v", "libx264", "-crf", "18",
-                    "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart",
-                    str(video_ja)], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    plan = json.loads(pathlib.Path(plan_path).read_text(encoding="utf-8"))
+    title = ((plan.get("layout") or {}).get("top_title") or "").strip()
+    raw = (plan.get("layout") or {}).get("canvas") or "1080x1920"
+    w, h = (int(x) for x in raw.lower().split("x"))
+    duration = _probe_duration(video)
 
-    # [3] 오디오 — 나레이션 구간만 교체. 대사·노래·배경은 원본 그대로.
-    spans = narration_spans(timeline)
+    dlg = parse_ass_events(pathlib.Path(subs_path).read_text(encoding="utf-8")) \
+        if subs_path and pathlib.Path(subs_path).exists() else []
+    nar = parse_ass_events(pathlib.Path(tts_subs_path).read_text(encoding="utf-8")) \
+        if tts_subs_path and pathlib.Path(tts_subs_path).exists() else []
+
+    # 번역 — 제목 + 대사 + 나레이션을 한 번에(배치·용어집은 transcreate 가 처리)
+    texts = ([title] if title else []) + [e["text"] for e in dlg] + [e["text"] for e in nar]
+    ja_map: dict[str, str] = {}
+    if texts:
+        for ent in transcreate(texts, config):
+            ja_map[ent.source] = ent.target or ent.source
+    ja_title = ja_map.get(title, title) if title else None
+    for e in dlg + nar:
+        e["text"] = ja_map.get(e["text"], e["text"])
+    log.info("번역 %d건 (제목 %s · 대사 %d · 나레이션 %d)",
+             len(texts), "O" if title else "X", len(dlg), len(nar))
+
+    work = ensure_dir(pathlib.Path(out_path).parent)
+    rcfg = config.get("render", {})
+    ass_path = work / "ja_convert.ass"
+    ass_path.write_text(
+        build_ja_ass(ja_title, dlg, nar, w, h, duration,
+                     sub_max_chars=int(rcfg.get("line_max_chars", 16))),
+        encoding="utf-8")
+
+    # ① 영상: 본문에 일본어 ASS 번인(원본 화면 무변경 — 지울 것이 없다)
+    fonts = config.get("paths", {}).get("fonts_dir")
+    burned = work / "ja_burned.mp4"
+    vf = f"ass={ass_path}" + (f":fontsdir={resolve_path(fonts)}" if fonts else "")
+    r = subprocess.run(["ffmpeg", "-y", "-i", video, "-vf", vf,
+                        "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+                        "-c:a", "copy", "-movflags", "+faststart", str(burned)],
+                       capture_output=True, text=True, timeout=1800)
+    if r.returncode != 0:
+        raise RuntimeError(f"자막 번인 실패: {(r.stderr or '')[-300:]}")
+
+    # ② 오디오: 나레이션 cue 에 일본어 TTS + 원본 덕킹. cue 가 없거나 --no-dub 면 그대로.
+    spans = [(e["start"], min(e["end"], duration or e["end"])) for e in nar]
     if no_dub or not spans:
-        pathlib.Path(video_ja).replace(out_path)
-        return {"final": str(out_path), "narration_spans": len(spans), "dub": False}
-    if not voice_id:
-        raise SystemExit("나레이션 교체에 voice_id 필요 (--voice). "
-                         "--no-dub 이면 자막·제목만 바꾼다")
+        pathlib.Path(out_path).unlink(missing_ok=True)
+        pathlib.Path(burned).rename(out_path)
+        return {"final": str(out_path), "narration_cues": len(spans), "dub": False}
 
-    from src.dub import _fit_audio, _mute_windows, separate_vocals, synthesize_segment
-    from engine import common as _common
-    audio = _common.extract_audio(str(video), work / "src_audio.wav")
-    base_a = work / "audio_keep.wav"
-    _mute_windows(audio, base_a, spans)                       # 나레이션 구간만 0 — 나머지 원본
-    novoc = separate_vocals(str(video), work / "stems", config)   # 반주 스템(나레이션 밑그림)
-    bed = work / "audio_bed.wav"
-    inv = [(0.0, spans[0][0])] + [(spans[i][1], spans[i + 1][0]) for i in range(len(spans) - 1)] \
-        + [(spans[-1][1], total + 1)]
-    _mute_windows(novoc, bed, [(s, e) for s, e in inv if e - s > 0.01])  # 구간 밖은 0
-
+    from src.dub import _fit_audio, synthesize_segment
     seg_files = []
-    for i, c in enumerate(t for t in timeline if t["narration"] and t["subtitle"]):
-        txt = ja.get(c["subtitle"]) or c["subtitle"]
-        raw = work / f"tts_{i}.bin"
-        raw.write_bytes(synthesize_segment(txt, config, voice_id=voice_id, lang="ja"))
-        fit = work / f"tts_{i}.wav"
-        _fit_audio(raw, fit, c["end"] - c["start"], max_len=c["end"] - c["start"])
-        seg_files.append((fit, c["start"]))
-    inputs, fc = ["-i", str(base_a), "-i", str(bed)], []
-    for i, (f, at) in enumerate(seg_files):
-        inputs += ["-i", str(f)]
-        fc.append(f"[{i + 2}:a]adelay={int(at * 1000)}|{int(at * 1000)}[d{i}]")
-    labels = "[0:a][1:a]" + "".join(f"[d{i}]" for i in range(len(seg_files)))
-    fc.append(f"{labels}amix=inputs={2 + len(seg_files)}:duration=first:normalize=0[am]")
-    mixed = work / "audio_ja.wav"
-    subprocess.run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(fc),
-                    "-map", "[am]", str(mixed)], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["ffmpeg", "-y", "-i", str(video_ja), "-i", str(mixed),
-                    "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
-                    "-b:a", "192k", "-movflags", "+faststart", str(out_path)],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"final": str(out_path), "narration_spans": len(spans), "dub": True,
+    for i, e in enumerate(nar):
+        raw_b = synthesize_segment(e["text"], config, voice_id=voice_id)
+        if not raw_b:
+            raise RuntimeError(f"TTS 합성 실패(cue {i}): 빈 결과")
+        seg = work / f"ja_tts_{i}.bin"
+        seg.write_bytes(raw_b)
+        fit = work / f"ja_tts_{i}_fit.wav"
+        _fit_audio(seg, fit, target_sec=max(0.5, e["end"] - e["start"]),
+                   max_len=max(0.6, e["end"] - e["start"]))
+        seg_files.append(str(fit))
+
+    gain = float(config.get("jp_convert", {}).get("duck_volume", 0.3))
+    graph = audio_graph(len(seg_files), spans, gain)
+    cmd = ["ffmpeg", "-y", "-i", str(burned)]
+    for f in seg_files:
+        cmd += ["-i", f]
+    cmd += ["-filter_complex", graph, "-map", "0:v", "-map", "[aout]",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", str(out_path)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if r.returncode != 0:
+        raise RuntimeError(f"오디오 합성 실패: {(r.stderr or '')[-300:]}")
+    pathlib.Path(burned).unlink(missing_ok=True)
+    return {"final": str(out_path), "narration_cues": len(spans), "dub": True,
             "tts_segments": len(seg_files)}
 
 
 def _parse_args(argv=None):
-    p = argparse.ArgumentParser(description="ai-video 쇼츠 → 일본어판 (제목·자막·나레이션)")
-    p.add_argument("--video", required=True)
+    import argparse
+    p = argparse.ArgumentParser(description="ai-video 본문 → 일본어 제목·자막·TTS (등급 J)")
+    p.add_argument("--video", required=True, help="본문 영상(텍스트·KR TTS 없음)")
     p.add_argument("--edit-plan", required=True)
+    p.add_argument("--subs", default=None, help="subtitles.ass (대사 자막 원료)")
+    p.add_argument("--tts-subs", default=None, help="tts_subtitles.ass (나레이션 원료)")
     p.add_argument("--out", required=True)
-    p.add_argument("--voice", default=None, help="나레이션 ElevenLabs voice_id")
-    p.add_argument("--no-dub", action="store_true", help="자막·제목만(나레이션 교체 생략)")
-    p.add_argument("--blur-subs", action="store_true",
-                   help="하단 자막 밴드도 재블러(자막이 구워진 구 run 호환)")
+    p.add_argument("--voice", default=None, help="ElevenLabs voice_id")
+    p.add_argument("--no-dub", action="store_true", help="자막·제목만(나레이션 TTS 생략)")
     p.add_argument("--config", default=None)
     return p.parse_args(argv)
 
@@ -234,5 +279,6 @@ def _parse_args(argv=None):
 if __name__ == "__main__":
     a = _parse_args()
     res = convert(a.video, a.edit_plan, a.out, load_config(a.config),
-                  voice_id=a.voice, no_dub=a.no_dub, blur_subs=a.blur_subs)
+                  voice_id=a.voice, no_dub=a.no_dub,
+                  subs_path=a.subs, tts_subs_path=a.tts_subs)
     print(res)

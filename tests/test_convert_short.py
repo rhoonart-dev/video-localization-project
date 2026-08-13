@@ -1,60 +1,73 @@
-"""convert_short 순수부 — edit_plan 좌표 변환·나레이션 구간·필터 문자열."""
-import pathlib
+"""convert_short v2 순수부 테스트 — 8/13 실물 실패 세 가지의 회귀 방지."""
 import sys
+import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from src.convert_short import (blur_filter, canvas_size, collect_texts,  # noqa: E402
-                               ja_events, mute_expr, narration_spans, output_timeline)
+from src.convert_short import (ass_time_to_sec, audio_graph, build_ja_ass,  # noqa: E402
+                               duck_expr, parse_ass_events, sec_to_ass_time, wrap_jp)
 
-PLAN = {
-    "layout": {"canvas": "1080x1920", "top_title": "김고은의 어린 시절"},
-    "timeline": [
-        {"clip_start_sec": 100.0, "clip_end_sec": 104.0, "subtitle": "안녕하세요",
-         "use_original_audio": True},
-        {"clip_start_sec": 300.0, "clip_end_sec": 303.0, "subtitle": "여기서 반전이",
-         "use_original_audio": False},
-        {"clip_start_sec": 310.0, "clip_end_sec": 312.0, "subtitle": "놀랍게도",
-         "use_original_audio": False},
-        {"clip_start_sec": 50.0, "clip_end_sec": 55.0, "subtitle": "안녕하세요",
-         "use_original_audio": True},
-    ],
-}
+ASS = """[Script Info]
+ScriptType: v4.00+
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.50,0:00:04.00,TTS,,0,0,0,,{\\an2}第2ラウンドが始まり
+Dialogue: 0,0:00:04.00,0:00:07.25,TTS,,0,0,0,,連続\\N正解していく
+Dialogue: 0,0:00:00.00,0:00:00.00,TTS,,0,0,0,,{\\an2}
+"""
 
 
-def test_output_timeline_is_cumulative_not_source_coords():
-    """clip_*_sec 은 원본 방송 좌표 — 출력 쇼츠 좌표는 누적합이어야 한다."""
-    tl = output_timeline(PLAN)
-    assert [(c["start"], c["end"]) for c in tl] == [(0.0, 4.0), (4.0, 7.0), (7.0, 9.0), (9.0, 14.0)]
-    assert [c["narration"] for c in tl] == [False, True, True, False]
+def test_ass_time_roundtrip():
+    assert ass_time_to_sec("0:00:12.34") == 12.34
+    assert ass_time_to_sec("1:02:03.05") == 3723.05
+    assert sec_to_ass_time(12.34) == "0:00:12.34"
+    assert sec_to_ass_time(0) == "0:00:00.00"
+    assert sec_to_ass_time(3723.999) == "1:02:04.00"   # 반올림 자리올림
 
 
-def test_narration_spans_merge_adjacent():
-    tl = output_timeline(PLAN)
-    assert narration_spans(tl) == [(4.0, 9.0)]          # 4~7, 7~9 인접 → 병합
-    assert narration_spans([]) == []
+def test_parse_ass_events_strips_tags_and_sorts():
+    ev = parse_ass_events(ASS)
+    assert len(ev) == 2                                  # 빈 텍스트 이벤트 제외
+    assert ev[0]["start"] == 1.5 and ev[0]["end"] == 4.0
+    assert ev[0]["text"] == "第2ラウンドが始まり"          # {\an2} 태그 제거
+    assert ev[1]["text"] == "連続 正解していく"            # \N → 공백
 
 
-def test_collect_texts_dedup_keeps_order():
-    tl = output_timeline(PLAN)
-    texts = collect_texts(PLAN, tl)
-    assert texts == ["김고은의 어린 시절", "안녕하세요", "여기서 반전이", "놀랍게도"]
+def test_wrap_jp_prevents_overflow():
+    """8/13 실측 ①: 제목이 줄바꿈 없이 화면 밖으로 나갔다."""
+    t = wrap_jp("連続正解に大喜びしたのもつかの間、自分の問題で間違えた", max_chars=14, max_lines=2)
+    lines = t.split("\\N")
+    assert len(lines) == 2 and all(len(x) <= 14 for x in lines)   # 27자 → 딱 2줄, 잘림 없음
+    over = wrap_jp("あ" * 40, max_chars=14, max_lines=2)          # 40자 → 넘침
+    ls = over.split("\\N")
+    assert len(ls) == 2 and all(len(x) <= 14 for x in ls) and ls[-1].endswith("…")
+    assert wrap_jp("短い") == "短い"
 
 
-def test_ja_events_title_spans_full_and_falls_back_to_source():
-    tl = output_timeline(PLAN)
-    ja = {"김고은의 어린 시절": "キム・ゴウンの幼少期", "안녕하세요": "こんにちは"}
-    ev = ja_events(tl, ja, "김고은의 어린 시절", tl[-1]["end"])
-    assert ev[0] == {"start": 0.0, "end": 14.0, "text": "キム・ゴウンの幼少期",
-                     "position": "top-center"}
-    assert ev[1]["text"] == "こんにちは" and ev[1]["position"] == "bottom-center"
-    assert ev[2]["text"] == "여기서 반전이"       # 번역 실패 → 원문 유지(빈 자막 금지)
+def test_build_ja_ass_layout():
+    """8/13 실측 ②: 나레이션 전문이 한 덩어리로 화면을 덮었다 — cue 별 이벤트."""
+    nar = [{"start": 1.0, "end": 4.0, "text": "第2ラウンドが始まり"},
+           {"start": 4.0, "end": 8.0, "text": "アンカーのヘリが自分の問題で間違えた"}]
+    dlg = [{"start": 2.0, "end": 3.0, "text": "最初のセリフ"}]
+    s = build_ja_ass("日本語タイトルです", dlg, nar, 1080, 1920, 12.0)
+    assert s.count("Dialogue:") == 4                     # 제목1 + 나레이션2 + 대사1
+    assert "JTitle" in s and "JNarr" in s and "JDlg" in s
+    assert "0:00:01.00,0:00:04.00,JNarr" in s            # cue 타이밍 보존
+    # 제목은 영상 전체 구간
+    assert "Dialogue: 0,0:00:00.00,0:00:12.00,JTitle" in s
+    # 제목 없으면 제목 이벤트 없음
+    assert build_ja_ass(None, dlg, nar, 1080, 1920, 12.0).count("Dialogue:") == 3
 
 
-def test_canvas_and_filters():
-    assert canvas_size(PLAN) == (1080, 1920)
-    assert canvas_size({}) == (1080, 1920)
-    f = blur_filter([(0, 76, 1080, 230), (0, 1382, 1080, 307)])
-    assert f.count("boxblur") == 2 and f.endswith("[v]") and "[0:v]split" in f
-    assert blur_filter([]) == "[0:v]null[v]"
-    assert mute_expr([(4.0, 9.0)]) == "between(t,4.000,9.000)"
+def test_duck_and_mix_graph():
+    """8/13 실측 ③ 후속: 원본 오디오는 cue 구간만 덕킹, TTS 는 cue 시작에 배치."""
+    spans = [(1.5, 4.0), (10.0, 12.5)]
+    d = duck_expr(spans, 0.3)
+    assert d.startswith("volume=0.3:enable=") and "between(t,1.500,4.000)" in d
+    assert duck_expr([]) == ""
+    g = audio_graph(2, spans, 0.3)
+    assert "adelay=1500|1500" in g and "adelay=10000|10000" in g
+    assert "amix=inputs=3" in g and g.endswith("[aout]")
+    g0 = audio_graph(0, [], 0.3)
+    assert "amix" not in g0 and g0.endswith("[aout]")    # cue 없음 — 원본 그대로
