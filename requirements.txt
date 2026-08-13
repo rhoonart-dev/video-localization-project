@@ -43,4 +43,5 @@ google-genai>=1.0       # 기본 provider=gemini (config.translate.provider)
 # torchaudio                   # XTTS 오디오 IO
 # torchcodec                   # torch 2.9+ 오디오 디코딩
 # cutlet  fugashi  unidic-lite # XTTS 일본어 토크나이저(MeCab)
-# elevenlabs>=1.0              # (대안) 상업 라이선스 클로닝 — ELEVENLABS_API_KEY 필요
+elevenlabs>=1.0                # 잔망루피 클론 보이스 더빙 + 등급 J 나레이션 TTS (8/13 실측:
+                               # 주석 상태라 pip sync 가 안 깔아 mm-06 ImportError — LOOPY C·J 공통 의존)
