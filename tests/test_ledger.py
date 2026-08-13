@@ -114,3 +114,18 @@ def test_get_by_state_and_counts():
         assert [r["video_id"] for r in ledger.get_by_state(conn, "discovered")] == ["v1"]
         c = ledger.counts(conn)
         assert c == {"discovered": 1, "skipped": 1}
+
+
+def test_backend_pick_and_pg_sql_helpers():
+    """B안 2단계 ②: 백엔드 선택(기본 sqlite·env 폴백) + pg 방언 헬퍼."""
+    import pytest
+    from src.ledger import pick_backend, q_pg, kpi_insert_sql
+    assert pick_backend({}, env={}) == "sqlite"
+    assert pick_backend({"ledger": {"backend": "postgres"}}, env={}) == "postgres"
+    assert pick_backend({}, env={"LOOPY_LEDGER_BACKEND": "postgres"}) == "postgres"
+    with pytest.raises(ValueError):
+        pick_backend({"ledger": {"backend": "mysql"}}, env={})
+    assert q_pg("SELECT * FROM videos WHERE video_id=?") == \
+        "SELECT * FROM videos WHERE video_id=%s"
+    assert "ON CONFLICT" in kpi_insert_sql(True) and "OR IGNORE" not in kpi_insert_sql(True)
+    assert "OR IGNORE" in kpi_insert_sql(False)

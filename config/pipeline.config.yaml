@@ -257,7 +257,9 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 �
   download_dir: data/source/auto   # 원본 자동 다운로드 위치
   content_type: anime              # process_video 인페인트 모드(캐릭터 애니메이션)
   inpaint_backend: lama            # LaMa(Apache-2.0) — opencv 폴백은 번짐 심함(2026-07-10 실측)
-  dub_python: .venv-gsv/bin/python # Level C 더빙 인터프리터(GPT-SoVITS 스택, py3.11)
+  dub_python: .venv/bin/python     # 더빙 인터프리터(8/14 이사): GSV 은퇴 후 elevenlabs·
+                                   # demucs·faster-whisper 전부 메인 venv(pip sync 관리)로 —
+                                   # .venv-gsv 는 pip sync 밖이라 의존이 늘 새는 함정이었다
   precheck:                        # 레벨 실측 판별(제목 추정 대체)
     frames: 8                      # 샘플 프레임 수
     min_conf: 0.75                 # 번인 텍스트 인정 신뢰도(OCR 노이즈 필터)
@@ -280,3 +282,9 @@ autopilot:                         # Phase 1: 후보 선별 봇 — 업로드 �
                                    # 검수함 카드가 장식이 된다(8/14 실측: 401 이 아니었으면
                                    # 「볼살 뀨~」가 검수 없이 예약 공개될 뻔했다)
     require_qa_pass: true          # (재활성 시) qa=hold 는 자동 승인 제외 — pass 만 업로드
+
+# ── 원장 백엔드 (B안 2단계 ②, 2026-08-14) ─────────────────────────────
+# sqlite(기본): mm-06 로컬 파일이 정본 — 지금 상태.
+# postgres: 중앙(loopy.*) — ves 0036 적용·미러 대조 검증 후 이 값만 바꾸면 전환된다.
+ledger:
+  backend: sqlite

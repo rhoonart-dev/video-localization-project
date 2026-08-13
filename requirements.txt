@@ -46,3 +46,6 @@ faster-whisper>=1.0            # 영상→대사 받아쓰기(ASR) — dub 전�
 # cutlet  fugashi  unidic-lite # XTTS 일본어 토크나이저(MeCab)
 elevenlabs>=1.0                # 잔망루피 클론 보이스 더빙 + 등급 J 나레이션 TTS (8/13 실측:
                                # 주석 상태라 pip sync 가 안 깔아 mm-06 ImportError — LOOPY C·J 공통 의존)
+psycopg2-binary>=2.9           # 원장 postgres 백엔드(B안 2단계 ② — 컷오버 전엔 미사용)
+demucs>=4.0                    # 더빙 보컬 분리 — .venv-gsv 은퇴(8/14): pip sync 가 관리하는
+                               # 메인 venv 로 이사해야 아무 맥에서나 더빙이 된다(torch 포함, 첫 설치 큼)

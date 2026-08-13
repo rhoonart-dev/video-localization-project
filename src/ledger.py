@@ -76,8 +76,71 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# ── Postgres 백엔드 (B안 2단계 ②, 2026-08-14) ────────────────────────────
+# 원장을 Supabase(중앙)로 옮기기 위한 이중 백엔드. 기본은 sqlite — 전환은
+# config ledger.backend=postgres (또는 env LOOPY_LEDGER_BACKEND) 하나로 한다.
+# 스키마·쿼리는 그대로 두고 연결만 갈아끼운다: search_path=loopy 라 raw SQL 의
+# "videos"/"kpi_snapshots" 가 loopy.* 를 가리키고, '?' 는 쉼이 '%s' 로 바꾼다.
+def pick_backend(config, env: Optional[dict] = None) -> str:
+    """원장 백엔드 결정 — config ledger.backend > env > 기본 sqlite. 순수 — 테스트 대상."""
+    import os
+    env = os.environ if env is None else env
+    v = str(((config or {}).get("ledger") or {}).get("backend")
+            or env.get("LOOPY_LEDGER_BACKEND") or "sqlite").lower()
+    if v not in ("sqlite", "postgres"):
+        raise ValueError(f"ledger.backend 는 sqlite|postgres (받은 값: {v})")
+    return v
+
+
+def q_pg(sql: str) -> str:
+    """sqlite 플레이스홀더 → psycopg. 원장 SQL 은 문자열 리터럴에 ? 를 안 쓴다(전수 확인
+    2026-08-14) — 단순 치환으로 충분. 순수 — 테스트 대상."""
+    return sql.replace("?", "%s")
+
+
+class _PgConn:
+    """sqlite3.Connection 의 원장 사용 부분집합 흉내 — execute/commit/close.
+    행은 dict(RealDictCursor) — sqlite3.Row 처럼 r["k"]·dict(r) 이 된다."""
+    is_pg = True
+
+    def __init__(self, pg):
+        self._pg = pg
+
+    def execute(self, sql, params=()):
+        import psycopg2.extras
+        cur = self._pg.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(q_pg(sql), tuple(params))
+        return cur
+
+    def commit(self):
+        self._pg.commit()
+
+    def close(self):
+        self._pg.close()
+
+
+def _pg_connect() -> "_PgConn":
+    import os
+    try:
+        import psycopg2  # noqa: F401
+    except ImportError as e:
+        raise ImportError("psycopg2-binary 필요: pip install psycopg2-binary") from e
+    import psycopg2
+    url = os.environ.get("PIPELINE_DB_URL")
+    if not url:
+        raise RuntimeError("PIPELINE_DB_URL 없음 — postgres 원장은 워커(ves 에이전트) env "
+                           "아래에서만 쓸 수 있다(secrets/ves.env)")
+    conn = _PgConn(psycopg2.connect(url, options="-c search_path=loopy,public"))
+    row = conn.execute("SELECT to_regclass('loopy.videos') AS t").fetchone()
+    if not row or not row.get("t"):
+        raise RuntimeError("loopy.videos 없음 — ves 마이그레이션 0036 적용 후 사용")
+    return conn
+
+
 def connect(db_path: Optional[str] = None, config: Optional[dict[str, Any]] = None) -> sqlite3.Connection:
     """원장 DB 연결(없으면 생성). WAL 모드 — 프로세스 크래시에도 상태 보존."""
+    if db_path is None and pick_backend(config) == "postgres":
+        return _pg_connect()                      # 중앙 원장(0036) — 아무 맥에서나
     if db_path is None:
         apcfg = (config or {}).get("autopilot", {})
         db_path = str(resolve_path(apcfg.get("ledger_path", "outputs/autopilot.db")))
@@ -204,16 +267,58 @@ def counts(conn: sqlite3.Connection) -> dict[str, int]:
 def record_kpi(conn: sqlite3.Connection, video_id: str, youtube_id: str,
                stats: dict[str, Any]) -> None:
     """일일 성과 스냅샷 기록(같은 시각 중복은 무시)."""
-    conn.execute(
-        """INSERT OR IGNORE INTO kpi_snapshots
-             (video_id, youtube_id, taken_at, views, likes, comments)
-           VALUES (?,?,?,?,?,?)""",
+    conn.execute(kpi_insert_sql(getattr(conn, "is_pg", False)),
         (video_id, youtube_id, _now(), stats.get("views"), stats.get("likes"),
          stats.get("comments")))
     conn.commit()
+
+
+def kpi_insert_sql(is_pg: bool) -> str:
+    """같은 시각 중복 무시 upsert — 방언만 다르다. 순수 — 테스트 대상."""
+    if is_pg:
+        return ("INSERT INTO kpi_snapshots (video_id, youtube_id, taken_at, views, likes, "
+                "comments) VALUES (?,?,?,?,?,?) ON CONFLICT (video_id, taken_at) DO NOTHING")
+    return ("INSERT OR IGNORE INTO kpi_snapshots (video_id, youtube_id, taken_at, views, "
+            "likes, comments) VALUES (?,?,?,?,?,?)")
 
 
 def kpi_history(conn: sqlite3.Connection, video_id: str) -> list[dict[str, Any]]:
     """영상별 스냅샷 시계열(오래된 순)."""
     return [dict(r) for r in conn.execute(
         "SELECT * FROM kpi_snapshots WHERE video_id=? ORDER BY taken_at", (video_id,))]
+
+
+def migrate_to_pg(config: Optional[dict[str, Any]] = None) -> dict[str, int]:
+    """sqlite 원장 전체 → loopy.* (컷오버 1회용). 멱등 — video_id/(video_id,taken_at) upsert."""
+    src = connect(config={**(config or {}), "ledger": {"backend": "sqlite"}})
+    dst = _pg_connect()
+    vids = [dict(r) for r in src.execute("SELECT * FROM videos")]
+    for r in vids:
+        cols = ("video_id", "title", "url", "duration", "view_count", "like_count",
+                "comment_count", "published_at", "state", "level_guess", "score",
+                "scores", "notes", "discovered_at", "updated_at", "publish_at", "youtube_id")
+        dst.execute(
+            "INSERT INTO videos (" + ",".join(cols) + ") VALUES (" + ",".join("?" * len(cols))
+            + ") ON CONFLICT (video_id) DO UPDATE SET "
+            + ",".join(f"{c}=excluded.{c}" for c in cols if c != "video_id"),
+            tuple(r.get(c) for c in cols))
+    kpis = [dict(r) for r in src.execute("SELECT * FROM kpi_snapshots")]
+    for r in kpis:
+        dst.execute(
+            "INSERT INTO kpi_snapshots (video_id, youtube_id, taken_at, views, likes, comments)"
+            " VALUES (?,?,?,?,?,?) ON CONFLICT (video_id, taken_at) DO NOTHING",
+            (r.get("video_id"), r.get("youtube_id"), r.get("taken_at"),
+             r.get("views"), r.get("likes"), r.get("comments")))
+    dst.commit(); dst.close(); src.close()
+    log.info("원장 이관: videos %d행 · kpi %d행 → loopy.*", len(vids), len(kpis))
+    return {"videos": len(vids), "kpi": len(kpis)}
+
+
+if __name__ == "__main__":
+    import argparse
+    from engine.common import load_config
+    ap = argparse.ArgumentParser(description="원장 유틸")
+    ap.add_argument("cmd", choices=["migrate-to-pg"])
+    a = ap.parse_args()
+    if a.cmd == "migrate-to-pg":
+        print(migrate_to_pg(load_config()))
