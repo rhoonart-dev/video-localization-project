@@ -50,8 +50,13 @@ def next_publish_at(now_utc: datetime, taken: set[str], hhmm: str = "19:00",
 
 
 def build_upload_meta(meta_draft: dict[str, Any], row: dict[str, Any], route: str,
-                      publish_at: str, ucfg: dict[str, Any]) -> dict[str, Any]:
-    """metadata_draft + 원장 행 → videos.insert body. 제목은 1안 자동(사람이 approve 로 승인함)."""
+                      publish_at, ucfg: dict[str, Any],
+                      privacy: str = "private") -> dict[str, Any]:
+    """metadata_draft + 원장 행 → videos.insert body. 제목은 1안 자동(사람이 approve 로 승인함).
+
+    공개 방식(관제 검수함 결정, 2026-08-14): privacy ∈ private|unlisted.
+    예약 공개는 private + publishAt 조합이다(YouTube API 규약) — publish_at 이 없으면
+    publishAt 키 자체를 뺀다(즉시 비공개/일부공개 업로드)."""
     candidates = meta_draft.get("title_candidates") or []
     title = (candidates[0] if candidates else row.get("title") or row.get("video_id", ""))[:100]
     snippet: dict[str, Any] = {
@@ -63,10 +68,14 @@ def build_upload_meta(meta_draft: dict[str, Any], row: dict[str, Any], route: st
     }
     if route == "C":                                        # 더빙본만 오디오 언어 ja
         snippet["defaultAudioLanguage"] = "ja"
-    return {"snippet": snippet,
-            "status": {"privacyStatus": "private",          # 예약 공개는 private 전제
-                       "publishAt": publish_at,
-                       "selfDeclaredMadeForKids": bool(ucfg.get("made_for_kids", False))}}
+    status: dict[str, Any] = {
+        "privacyStatus": privacy if privacy in ("private", "unlisted") else "private",
+        "selfDeclaredMadeForKids": bool(ucfg.get("made_for_kids", False)),
+    }
+    if publish_at:
+        status["privacyStatus"] = "private"        # 예약 공개는 private 전제
+        status["publishAt"] = publish_at
+    return {"snippet": snippet, "status": status}
 
 
 # ── OAuth / API ──────────────────────────────────────────────────────────
@@ -123,6 +132,6 @@ def upload_video(video_path: str | pathlib.Path, body: dict[str, Any],
     vid = res.get("id")
     if not vid:
         raise RuntimeError(f"업로드 응답에 id 없음: {json.dumps(res)[:300]}")
-    log.info("업로드 완료: https://youtu.be/%s (private, publishAt=%s)",
-             vid, body["status"].get("publishAt"))
+    log.info("업로드 완료: https://youtu.be/%s (%s, publishAt=%s)",
+             vid, body["status"].get("privacyStatus"), body["status"].get("publishAt"))
     return vid

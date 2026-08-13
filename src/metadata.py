@@ -36,10 +36,12 @@ def build_prompt(source_title: str, source_desc: str, glossary: dict[str, str]) 
         "トランスクリエーションせよ。\n"
         f"原題: {source_title}\n原説明: {source_desc or '(なし)'}{gl}\n\n"
         "出力は JSON オブジェクトのみ:\n"
-        '{"title_candidates": [3案], "description": "本文+改行+ハッシュタグ", '
+        '{"title_candidates": [3案], "title_candidates_ko": [同じ3案の韓国語訳], '
+        '"description": "本文+改行+ハッシュタグ", "description_ko": "説明の韓国語訳", '
         '"hashtags": [#タグ...], "tags": [検索タグ15〜20]}\n'
         "制約: タイトルは惹き+キャラ性, 説明は共感トーン, "
         "ハッシュタグに #残念ルーピー #ルーピー を含める。"
+        "_ko フィールドは韓国人レビュアーの対訳用 — 直訳で簡潔に。"
     )
 
 
@@ -67,7 +69,9 @@ def assemble_draft(video_id: str, llm: dict[str, Any], copyright_line: str) -> d
         "_warning": WARNING,
         "video_id": video_id,
         "title_candidates": (llm.get("title_candidates") or [])[:3],
+        "title_candidates_ko": (llm.get("title_candidates_ko") or [])[:3],   # 검수 한글 대역(8/14)
         "description": desc,
+        "description_ko": (llm.get("description_ko") or "").rstrip(),
         "hashtags": llm.get("hashtags") or [],
         "tags": (llm.get("tags") or [])[:20],
         "copyright": copyright_line,

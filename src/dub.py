@@ -614,6 +614,12 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
 
     segments = parse_segments(subtitle_path)
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
+    # 한글 대역(관제 검수 카드용, 2026-08-14): 더빙 대사의 KO⇄JA 쌍을 남긴다 —
+    # B 루트는 translations.json 이 이미 있지만 C 루트는 여기가 유일한 접점이다.
+    (base / "ko_ja_pairs.json").write_text(
+        json.dumps({"subs": [{"start": e["start"], "ko": s_["text"], "ja": e["text"]}
+                              for s_, e in zip(segs, events)]},
+                   ensure_ascii=False, indent=2), encoding="utf-8")
     seg_dir = ensure_dir(base / "dub_segments")
     ext = segment_ext(config)
     log.warning("Level C 더빙 초안 생성(backend=%s). hero/리텐션 리스크는 사람 검토 필수.", backend)

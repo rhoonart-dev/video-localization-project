@@ -622,11 +622,19 @@ def cmd_approve(config: dict[str, Any], video_id: str) -> pathlib.Path:
     return pkg
 
 
-def cmd_upload(config: dict[str, Any], video_id: str) -> dict[str, Any]:
-    """approved 영상을 API 로 업로드(private + publishAt 예약 공개).
+def cmd_upload(config: dict[str, Any], video_id: str,
+               privacy: Optional[str] = None,
+               publish_at: Optional[str] = None) -> dict[str, Any]:
+    """approved 영상을 API 로 업로드.
 
     공개 '결정'은 approve(사람)가 이미 했다 — 여기는 기계적 실행만.
-    실패 시 approved 에 남아 재시도 가능(`upload <id>`)."""
+    실패 시 approved 에 남아 재시도 가능(`upload <id>`).
+
+    공개 방식(관제 검수함, 2026-08-14 — 다른 채널과 동일한 3택):
+      schedule(기본)  private + publishAt — publish_at 없으면 다음 19:00 JST 빈 슬롯
+      private         즉시 비공개(예약 없음 — 공개 전환은 사람이 Studio 에서)
+      unlisted        일부공개
+    public 은 받지 않는다(R9 — 자동 발행은 비공개·일부공개·예약까지)."""
     from datetime import datetime, timezone as _tz
     from src import uploader
     from src.notify import notify
@@ -648,19 +656,29 @@ def cmd_upload(config: dict[str, Any], video_id: str) -> dict[str, Any]:
         meta_path = base / "metadata_draft.json"
         draft = read_json(meta_path) if meta_path.exists() else {}
 
-        publish_at = uploader.next_publish_at(
-            datetime.now(_tz.utc), ledger.taken_publish_slots(conn),
-            hhmm=str(ucfg.get("default_time", "19:00")),
-            tz_name=str(ucfg.get("timezone", "Asia/Tokyo")))
+        mode = (privacy or "schedule").lower()
+        if mode not in ("schedule", "private", "unlisted"):
+            raise SystemExit(f"privacy 는 schedule|private|unlisted (받은 값: {privacy})")
+        if mode == "schedule":
+            publish_at = publish_at or uploader.next_publish_at(
+                datetime.now(_tz.utc), ledger.taken_publish_slots(conn),
+                hhmm=str(ucfg.get("default_time", "19:00")),
+                tz_name=str(ucfg.get("timezone", "Asia/Tokyo")))
+        else:
+            publish_at = None                     # 즉시 비공개/일부공개 — 예약 없음
         body = uploader.build_upload_meta(draft, row, row.get("level_guess") or "A",
-                                          publish_at, ucfg)
+                                          publish_at, ucfg,
+                                          privacy=("unlisted" if mode == "unlisted"
+                                                   else "private"))
         yt_id = uploader.upload_video(pkg_video, body)
         ledger.record_upload(conn, video_id, yt_id, publish_at)
     finally:
         conn.close()
     url = f"https://youtu.be/{yt_id}"
-    notify(f"🚀 업로드 완료(예약 공개) — {row.get('title')}\n"
-           f"{url}\n공개 시각: {publish_at} (그 전까지 비공개 — Studio 에서 수정/취소 가능)")
+    _pub_desc = (f"예약 공개 {publish_at} (그 전까지 비공개)" if publish_at
+                 else {"private": "비공개(예약 없음)", "unlisted": "일부공개"}[mode])
+    notify(f"🚀 업로드 완료 — {row.get('title')}\n{url}\n"
+           f"공개 방식: {_pub_desc} — Studio 에서 수정/취소 가능")
     log.info("업로드·예약 완료: %s → %s (publishAt=%s)", video_id, url, publish_at)
     print(f"업로드 완료: {url} (예약 공개 {publish_at})")
     return {"youtube_id": yt_id, "publish_at": publish_at, "url": url}
@@ -935,6 +953,10 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     sub.add_parser("daily")
     pl = sub.add_parser("upload")
     pl.add_argument("video_id")
+    pl.add_argument("--privacy", default=None, choices=["schedule", "private", "unlisted"],
+                    help="기본 schedule(다음 19:00 JST). public 은 없다(R9)")
+    pl.add_argument("--publish-at", default=None,
+                    help="schedule 일 때 예약 시각(ISO8601 UTC) — 없으면 다음 빈 슬롯")
     prb = sub.add_parser("refbank")
     prb.add_argument("action", choices=["status", "seed"])
     prb.add_argument("sources", nargs="*", help="seed: media 경로 또는 path:source_id")
@@ -973,7 +995,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     elif args.cmd == "daily":
         cmd_daily(config, config_path=args.config)
     elif args.cmd == "upload":
-        cmd_upload(config, args.video_id)
+        cmd_upload(config, args.video_id, privacy=args.privacy, publish_at=args.publish_at)
     elif args.cmd == "refbank":
         cmd_refbank(config, args.action, args.sources)
 

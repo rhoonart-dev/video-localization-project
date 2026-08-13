@@ -79,7 +79,9 @@ SCHEMA_TRANSLATE = {
             "required": ["index", "ja"]}},
         "top_title_ja": {"type": "string"},
         "youtube_title_ja": {"type": "string"},
+        "youtube_title_ko": {"type": "string"},   # 검수 한글 대역(8/14) — 위 제목의 한국어 직역
         "description_ja": {"type": "string"},
+        "description_ko": {"type": "string"},     # 검수 한글 대역(8/14)
         "hashtags_extra": {"type": "array", "items": {"type": "string"}},
         "telops": {"type": "array", "items": {"type": "object", "properties": {
             "index": {"type": "integer"}, "use": {"type": "boolean"}, "ja": {"type": "string"}},
@@ -315,6 +317,8 @@ TRANSLATE_PROMPT = """당신은 한국 예능 쇼츠를 일본 시청자용으�
    줄바꿈을 위해 **구절 경계마다 반각 공백**을 넣으세요(한 구절 최대 14자 목표).
 3. **내레이션 번역(tts_cues)**: 짧고 힘있는 예능 내레이션 문체.
 4. **상단 제목(top_title_ja)**: 2줄, **각 줄 전각 11자 이내(필수 — 넘으면 화면에서 잘린다)**. 낚시 금지 — 실제 내용 기반으로 궁금증 유발.
+5-1. **한국어 대역(youtube_title_ko·description_ko)**: 한국인 검수자용 — 위에서 만든
+   일본어 제목·설명의 한국어 직역을 함께 출력한다(간결하게, 의역 금지).
 5. **유튜브 제목(youtube_title_ja)**: 90자 이내, 반드시 작품명 「{work_display}」 포함,
    일본 쇼츠 어법(w, 〜, ！ 활용 가능).
 6. **설명란(description_ja)**: 1~2문장, 해시태그 없이.
@@ -702,7 +706,9 @@ def l5_metadata(job: Path, translation: dict, wcfg: dict, out_dir: Path):
     desc_lines += ["", " ".join(hashtags)]
     meta = {
         "youtube_title": translation["youtube_title_ja"],
+        "youtube_title_ko": translation.get("youtube_title_ko") or "",   # 검수 한글 대역(8/14)
         "description": "\n".join(desc_lines),
+        "description_ko": translation.get("description_ko") or "",
         "tags": [h.lstrip("#") for h in hashtags],
         "top_title_burned": translation["top_title_ja"],
         "notes": translation.get("notes", []),

@@ -50,3 +50,19 @@ def test_build_upload_meta_fallbacks():
                              publish_at="2026-07-09T10:00:00Z", ucfg={})
     assert body["snippet"]["title"] == "원제만 있음"
     assert "defaultAudioLanguage" not in body["snippet"]   # A=원본 오디오(한국어) 유지
+
+
+def test_build_upload_meta_privacy_modes():
+    """관제 3택(8/14): 예약=private+publishAt · 비공개/일부공개=publishAt 없음."""
+    from src.uploader import build_upload_meta
+    draft = {"title_candidates": ["タイトル"], "description": "説明", "tags": ["t"]}
+    row = {"video_id": "v1", "title": "원제"}
+    b = build_upload_meta(draft, row, "C", "2026-08-15T10:00:00Z", {}, privacy="private")
+    assert b["status"]["privacyStatus"] == "private" and b["status"]["publishAt"]
+    b2 = build_upload_meta(draft, row, "B", None, {}, privacy="unlisted")
+    assert b2["status"]["privacyStatus"] == "unlisted" and "publishAt" not in b2["status"]
+    b3 = build_upload_meta(draft, row, "B", None, {}, privacy="private")
+    assert b3["status"]["privacyStatus"] == "private" and "publishAt" not in b3["status"]
+    # 예약인데 unlisted 를 넘겨도 private 으로 강제(YouTube 규약)
+    b4 = build_upload_meta(draft, row, "B", "2026-08-15T10:00:00Z", {}, privacy="unlisted")
+    assert b4["status"]["privacyStatus"] == "private"
