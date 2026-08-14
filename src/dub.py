@@ -282,6 +282,31 @@ def _is_dialogue(text: str) -> bool:
     return True
 
 
+_SYL_RUN = re.compile(r"([가-힣])\1{2,}")        # 같은 음절 3+ 연속: 끙끙끙끙, 아아아
+_UNIT_RUN = re.compile(r"([가-힣]{2})\1+")       # 두 음절 단위 반복: 아지아지, 음냐음냐
+
+
+def strip_non_lexical(text: str) -> str:
+    """'단어나 문장이 안 되는 자막은 필요 없어'(사용자 결정 8/14) — 옹알이 토큰 제거.
+
+    ASR 이 캐릭터 옹알이를 한글로 받아쓴 것('끙끙끙끙야', '아지아지야')이 그대로
+    더빙·자막이 되는 것을 막는다. 토큰 단위라 진짜 단어의 반복(노래 '배고파 배고파')은
+    남는다. 걷어낸 뒤 남은 것이 대사가 못 되면(_is_dialogue 기준) 빈 문자열 —
+    그 구간은 더빙·자막 대상이 아니며 원본 소리를 그대로 둔다. 순수 — 테스트 대상."""
+    kept = []
+    for tok in (text or "").split():
+        core = re.sub(r"[\s!?.,~…♪♥★\-]+", "", tok)
+        if not core:
+            continue
+        if _SYL_RUN.search(core) or _UNIT_RUN.search(core):
+            rest = _UNIT_RUN.sub("", _SYL_RUN.sub("", core))
+            if len(re.findall(r"[가-힣]", rest)) <= 2:
+                continue                        # 반복 빼면 두 음절도 안 남는다 = 옹알이
+        kept.append(tok)
+    out = " ".join(kept)
+    return out if _is_dialogue(out) else ""
+
+
 def build_alignment_report(video_id: str, segments: list[dict[str, Any]],
                            voice_id: str) -> dict[str, Any]:
     return {
@@ -968,6 +993,23 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
         segs = kept
         if not segs:
             raise ValueError("dialogue_only 필터 결과 대사 0개. asr_model 또는 필터 확인.")
+    # 옹알이 게이트(8/14 사용자 결정): dialogue_only 와 별개로 **항상** 돈다 —
+    # '단어나 문장이 안 되는' ASR 구간은 더빙·자막에서 뺀다(원본 소리는 그대로).
+    # 실측: '끙끙끙끙야 아지아지야 오 너무 예뻐' → '오 너무 예뻐'. 좌표(idx)는 이
+    # 게이트 **뒤**의 목록 기준이라 검수 카드·수정 재렌더와 어긋나지 않는다.
+    if config.get("dub", {}).get("drop_gibberish", True):
+        cleaned = []
+        for s in segs:
+            t = strip_non_lexical(s["text"])
+            if not t:
+                continue
+            cleaned.append({**s, "text": t} if t != s["text"] else s)
+        if len(cleaned) != len(segs):
+            log.info("옹알이 게이트: %d→%d 구간(단어 안 되는 자막 제외)", len(segs), len(cleaned))
+        segs = cleaned
+        if not segs:
+            raise ValueError("옹알이 게이트 결과 대사 0개 — 대사 없는 영상(리액션만)일 수 "
+                             "있습니다. no_dialogue_fallback(BJ) 대상.")
     log.info("ASR 대사 %d개 받아쓰기 완료 → 트랜스크리에이션", len(segs))
 
     # 더빙용 길이 예산: 번역이 슬롯 대비 길면 어떤 페이싱으로도 말이 빨라진다(근본 원인)

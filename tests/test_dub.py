@@ -432,3 +432,21 @@ def test_apply_dub_overrides_by_prefilter_idx():
     assert events[1]["text"] == ""                          # 원본 불변(순수)
     same, n0 = apply_dub_overrides(events, {})
     assert n0 == 0 and same[0]["text"] == "一"
+
+
+def test_strip_non_lexical_drops_babble_keeps_words():
+    from src.dub import strip_non_lexical
+    # 옹알이 토큰만 제거, 진짜 말은 유지 (8/14 실측 사례)
+    assert strip_non_lexical("끙끙끙끙야 아지아지야 오 너무 예뻐") == "오 너무 예뻐"
+    # 진짜 단어의 반복(노래 가사)은 옹알이가 아니다
+    assert strip_non_lexical("배고파 배고파 배고파 배고파") == "배고파 배고파 배고파 배고파"
+    # 전부 옹알이면 빈 문자열 = 이 구간은 더빙·자막 대상 아님
+    assert strip_non_lexical("음냐음냐 끄으으으응") == ""
+    # 한계(의도): 2연속 반복('끄으응')은 안 잡는다 — 사전 없이 잡으면 '바나나' 같은
+    # 실제 단어가 오탐된다. 단독이면 어차피 _is_dialogue 3음절 규칙으로 걸러질 것 많음.
+    assert strip_non_lexical("바나나 먹었어요") == "바나나 먹었어요"
+    assert strip_non_lexical("야!") == ""
+    assert strip_non_lexical("") == ""
+    # 짧지만 성립하는 한마디는 남는다
+    assert strip_non_lexical("맛있어요") == "맛있어요"
+    assert strip_non_lexical("아아아아 잘 먹겠습니다") == "잘 먹겠습니다"
