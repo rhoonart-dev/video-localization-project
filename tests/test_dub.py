@@ -418,3 +418,17 @@ def test_backcheck_summary_counts_failures():
     assert s["cer_max"] == 0.6 and abs(s["cer_avg"] - 0.3) < 1e-9
     empty = backcheck_summary([], fail_cer=0.5)
     assert empty["checked"] == 0 and empty["failed"] == 0
+
+
+def test_apply_dub_overrides_by_prefilter_idx():
+    from src.dub import apply_dub_overrides
+    events = [{"start": 1.0, "end": 2.0, "text": "一"},
+              {"start": 3.0, "end": 4.0, "text": ""},      # 지문 제거로 비었던 줄
+              {"start": 5.0, "end": 6.0, "text": "三"}]
+    out, n = apply_dub_overrides(events, {"subs": {"1": "補充", "2": {"ja": "修正三"},
+                                                   "9": "없는 인덱스", "x": "무시"}})
+    assert n == 2
+    assert out[1]["text"] == "補充" and out[2]["text"] == "修正三"
+    assert events[1]["text"] == ""                          # 원본 불변(순수)
+    same, n0 = apply_dub_overrides(events, {})
+    assert n0 == 0 and same[0]["text"] == "一"

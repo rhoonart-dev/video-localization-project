@@ -671,8 +671,10 @@ def build_ko_ja_pairs(backup: Path, out_dir: Path, translation: dict,
                       max_items: int = 40) -> dict:
     """한글⇄일본어 대역(8/14 사용자 요청) — 관제 검수 카드에서 일본어 제목·자막을
     한글과 나란히 본다. 원문은 백업(KO)·L2 텔롭에서, 번역은 translation 에서.
+    idx(8/14 반려-수정): 각 항목의 idx 는 translation 각 목록의 index 필드와 같은
+    좌표다 — 검수함 '수정 재렌더'의 overrides 가 이 좌표로 돌아온다(apply_overrides).
     실패는 조용히 비운다(대역은 검수 편의지 렌더 정본이 아니다). 순수 — 테스트 대상."""
-    pairs = {"top_title": None, "subs": [], "telops": []}
+    pairs = {"top_title": None, "subs": [], "tts": [], "telops": []}
     try:
         ep = json.loads((backup / "edit_plan.json").read_text(encoding="utf-8"))
         ko = ((ep.get("layout") or {}).get("top_title") or "").strip()
@@ -681,9 +683,17 @@ def build_ko_ja_pairs(backup: Path, out_dir: Path, translation: dict,
         pairs["top_title"] = {"ko": None, "ja": translation.get("top_title_ja")}
     try:
         segs = json.loads((backup / "subtitle_segments.json").read_text(encoding="utf-8"))
-        for seg, tr in list(zip(segs, translation.get("segments") or []))[:max_items]:
-            pairs["subs"].append({"start": seg.get("start_sec"),
+        for i, (seg, tr) in enumerate(list(zip(segs, translation.get("segments") or []))[:max_items]):
+            pairs["subs"].append({"idx": tr.get("index", i), "start": seg.get("start_sec"),
                                   "ko": seg.get("text"), "ja": tr.get("ja")})
+    except Exception:
+        pass
+    try:
+        resources = json.loads((backup / "checkpoint_resources.json").read_text(encoding="utf-8"))
+        cues = [c["cue"]["text"] for c in resources.get("tts_cue_files", [])]
+        by_i = {t.get("index"): t for t in (translation.get("tts_cues") or [])}
+        for i, ko in enumerate(cues[:max_items]):
+            pairs["tts"].append({"idx": i, "ko": ko, "ja": (by_i.get(i) or {}).get("ja")})
     except Exception:
         pass
     try:
@@ -693,10 +703,44 @@ def build_ko_ja_pairs(backup: Path, out_dir: Path, translation: dict,
             tr = by_idx.get(i) or {}
             if tr.get("use") is False:
                 continue
-            pairs["telops"].append({"ko": t.get("text_ko"), "ja": tr.get("ja")})
+            pairs["telops"].append({"idx": i, "ko": t.get("text_ko"), "ja": tr.get("ja")})
     except Exception:
         pass
     return pairs
+
+
+def apply_overrides(translation: dict, ov: dict) -> dict:
+    """검수 반려 '수정 재렌더'(8/14) — 운영자가 검수함 카드에서 고친 텍스트를 번역본에 병합.
+
+    좌표계는 검수 카드 ko_ja_pairs 의 idx(= translation 각 목록의 index 필드).
+    · 문자열 필드: youtube_title_ja/_ko · description_ja/_ko · top_title_ja — 통째 교체.
+    · subs{idx}→segments · tts{idx}→tts_cues · telops{idx}→telops: 값이 dict 면 항목에
+      update(예: {"ja":"…","use":false}), 문자열이면 ja 만 교체. 없는 idx 는 무시.
+    원본은 건드리지 않고 사본을 돌려준다. 순수 — 테스트 대상."""
+    import copy
+    out = copy.deepcopy(translation)
+    for k in ("youtube_title_ja", "youtube_title_ko",
+              "description_ja", "description_ko", "top_title_ja"):
+        v = (ov or {}).get(k)
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    for src, dst in (("subs", "segments"), ("tts", "tts_cues"), ("telops", "telops")):
+        edits = (ov or {}).get(src)
+        if not isinstance(edits, dict):
+            continue
+        by_idx = {e.get("index"): e for e in (out.get(dst) or []) if isinstance(e, dict)}
+        for key, v in edits.items():
+            try:
+                item = by_idx.get(int(key))
+            except (TypeError, ValueError):
+                continue
+            if item is None:
+                continue
+            if isinstance(v, dict):
+                item.update(v)
+            elif isinstance(v, str) and v.strip():
+                item["ja"] = v.strip()
+    return out
 
 
 def l5_metadata(job: Path, translation: dict, wcfg: dict, out_dir: Path):
@@ -728,6 +772,9 @@ def main():
     ap.add_argument("--job-dir", required=True)
     ap.add_argument("--locale", default="ja")
     ap.add_argument("--skip-render", action="store_true", help="L4 재렌더 생략(번역까지만)")
+    ap.add_argument("--overrides", default=None,
+                    help="검수 반려 수정 JSON(카드 ko_ja_pairs idx 좌표) — L1 번역에 병합해 "
+                         "L3+ 를 고친 텍스트로 재실행. 제목 줄길이 상한 검사는 건너뛴다(운영자 결정 존중)")
     args = ap.parse_args()
 
     job = Path(args.job_dir).resolve()
@@ -753,6 +800,15 @@ def main():
     mark(state, job.name, "L2b")
     translation = l1_translate(backup, telop_data, work, wcfg, out_dir, client)
     mark(state, job.name, "L1")
+    if args.overrides:
+        # 반려-수정 재렌더(8/14): 검수함에서 고친 텍스트를 L1 결과(캐시 포함)에 병합하고
+        # translation.json 을 재기록 — 이후 L3(자막·제목·TTS 텍스트)·L4(재렌더)·L5(메타)가
+        # 전부 고친 본을 쓴다. 같은 카드에서 여러 번 고치면 병합이 누적된다(마지막이 이긴다).
+        ov = json.loads(Path(args.overrides).read_text(encoding="utf-8"))
+        translation = apply_overrides(translation, ov)
+        (out_dir / "translation.json").write_text(
+            json.dumps(translation, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[L1+] 반려 수정 병합({Path(args.overrides).name}) → translation.json 재기록")
     l3_apply(job, backup, translation, telop_refined, wcfg, locale_cfg, out_dir)
     mark(state, job.name, "L3")
     l3t_tts(job, backup, locale_cfg)

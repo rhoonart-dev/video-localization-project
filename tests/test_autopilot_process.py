@@ -92,3 +92,20 @@ def test_final_video_for_bc_route():
         assert final_video_for("BC", base) is None
         (base / "final_dubbed_subbed.mp4").write_bytes(b"x")
         assert final_video_for("BC", base).name == "final_dubbed_subbed.mp4"
+
+
+def test_apply_subtitle_overrides_patches_targets():
+    import json
+    from src.process_video import _apply_subtitle_overrides
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        (work / "translations.json").write_text(json.dumps(
+            {"entries": [{"source": "하나", "target": "一"},
+                         {"source": "둘", "target": "二"}]}, ensure_ascii=False))
+        assert _apply_subtitle_overrides(work) == 0        # overrides 없음 = 일반 처리
+        (work / "overrides.json").write_text(json.dumps(
+            {"subs": {"1": "修正二", "7": "없는 인덱스"}}, ensure_ascii=False))
+        assert _apply_subtitle_overrides(work) == 1
+        doc = json.loads((work / "translations.json").read_text())
+        assert doc["entries"][1]["target"] == "修正二"
+        assert doc["entries"][0]["target"] == "一"

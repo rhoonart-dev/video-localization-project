@@ -30,6 +30,40 @@ def _level_opts(config: dict[str, Any], level: str) -> dict[str, Any]:
     return levels[level]
 
 
+def _apply_subtitle_overrides(work: Path) -> int:
+    """검수 반려 '수정 재렌더'(8/14): overrides.json subs{idx: ja} 를 translations.json
+    entries[idx].target 에 반영 — 렌더(자막 그리기)가 이 파일을 읽기 직전에 병합한다.
+
+    idx 는 검수 카드 자막 순번(= entries 순번 — 관제 review_meta 가 translations.json
+    순서 그대로 카드에 보여준다). 값이 dict 면 {"ja": …}. 없는 idx·빈 값은 무시.
+    적용 건수 반환. 파일이 없으면 0(일반 처리 — 재렌더 아님)."""
+    import json as _json
+    ov_path = work / "overrides.json"
+    tr_path = work / "translations.json"
+    if not (ov_path.exists() and tr_path.exists()):
+        return 0
+    try:
+        subs = (_json.loads(ov_path.read_text(encoding="utf-8")) or {}).get("subs") or {}
+        doc = _json.loads(tr_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        log.warning("overrides 병합 실패(무시하고 초벌 번역 진행): %s", e)
+        return 0
+    entries = doc.get("entries") or []
+    n = 0
+    for key, v in subs.items():
+        try:
+            i = int(key)
+        except (TypeError, ValueError):
+            continue
+        text = v.get("ja") if isinstance(v, dict) else v
+        if 0 <= i < len(entries) and isinstance(text, str) and text.strip():
+            entries[i]["target"] = text.strip()
+            n += 1
+    if n:
+        tr_path.write_text(_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    return n
+
+
 def process_video(video: str, video_id: str, level: str, config: dict[str, Any],
                   content_type: Optional[str] = None, roi: Optional[tuple] = None,
                   hero: bool = False, use_deepl: bool = False,
@@ -78,6 +112,9 @@ def process_video(video: str, video_id: str, level: str, config: dict[str, Any],
     else:
         translate_mod.translate(str(work / "detections.json"), config,
                                 hero=hero, use_deepl=use_deepl)
+        n_ov = _apply_subtitle_overrides(work)
+        if n_ov:
+            log.info("반려 수정 병합: 자막 %d건 교체(overrides.json → translations.json)", n_ov)
         render_out = render_mod.render(
             str(work / "detections.json"), str(work / "translations.json"), config,
             mode=render_mode, inpainted_dir=str(inpainted_dir) if render_mode == "replace" else None)

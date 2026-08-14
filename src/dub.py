@@ -133,6 +133,28 @@ def retime_events(events: list[dict[str, Any]], durs: list[float],
     return out
 
 
+def apply_dub_overrides(events: list[dict[str, Any]],
+                        ov: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    """검수 반려 '수정 재렌더'(8/14): overrides subs{idx: ja} 를 더빙 대사(events)에 병합.
+
+    idx 는 ko_ja_pairs.json subs 의 idx(= ASR 세그 순번, 빈 대사 필터 **전**) — 검수함
+    카드가 보여준 좌표 그대로 돌아온다. 값이 dict 면 {"ja": …} 를 본다. 없는 idx·빈
+    문자열은 무시(운영자가 안 고친 줄). 사본 반환. 순수 — 테스트 대상."""
+    subs = (ov or {}).get("subs") or {}
+    out = [dict(e) for e in events]
+    n = 0
+    for key, v in subs.items():
+        try:
+            i = int(key)
+        except (TypeError, ValueError):
+            continue
+        text = v.get("ja") if isinstance(v, dict) else v
+        if 0 <= i < len(out) and isinstance(text, str) and text.strip():
+            out[i]["text"] = text.strip()
+            n += 1
+    return out, n
+
+
 def _needs_truncate(dur: float, max_len: Optional[float]) -> bool:
     """배속 후에도 슬롯(다음 세그 시작)을 넘으면 잘라야 한다(드론/겹침 방지)."""
     return max_len is not None and dur > max_len + 0.05
@@ -614,12 +636,9 @@ def dub(video_id: str, subtitle_path: str, level: str, config: dict[str, Any],
 
     segments = parse_segments(subtitle_path)
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
-    # 한글 대역(관제 검수 카드용, 2026-08-14): 더빙 대사의 KO⇄JA 쌍을 남긴다 —
-    # B 루트는 translations.json 이 이미 있지만 C 루트는 여기가 유일한 접점이다.
-    (base / "ko_ja_pairs.json").write_text(
-        json.dumps({"subs": [{"start": e["start"], "ko": s_["text"], "ja": e["text"]}
-                              for s_, e in zip(segs, events)]},
-                   ensure_ascii=False, indent=2), encoding="utf-8")
+    # (8/14 정정) 한글 대역 ko_ja_pairs 저장은 dub_from_video 로 옮겼다 — 여기엔 KO 원문이
+    # 없다(subtitle_path 는 이미 일본어 SRT). 종전 블록은 이 스코프에 없는 변수(segs/events)
+    # 를 참조해 모든 C 더빙이 NameError 로 죽는 상태였다(8/14 재검 실측).
     seg_dir = ensure_dir(base / "dub_segments")
     ext = segment_ext(config)
     log.warning("Level C 더빙 초안 생성(backend=%s). hero/리텐션 리스크는 사람 검토 필수.", backend)
@@ -961,9 +980,24 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     # 지문(（もぐもぐ）)을 넣으면 더빙이 억지 발음해 뭉개짐 → 가타카나 변환 + 지문 제거.
     jmap = {e.source: strip_stage_directions(fix_leaked_korean(e.target, config)) for e in entries}
     events = [{"start": s["start"], "end": s["end"], "text": jmap.get(s["text"], "")} for s in segs]
-    events = [e for e in events if e["text"].strip()]   # 지문만이던 세그(요음!→（もぐもぐ）) 제거
 
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
+    # 반려-수정 재렌더(8/14): 검수함에서 고친 대사(overrides.json)를 합성 전에 병합.
+    # 좌표(idx)는 아래 ko_ja_pairs 의 idx 와 같은 '빈 대사 필터 전 세그 순번' — 그래서
+    # 필터보다 먼저 적용한다(지문 제거로 비었던 줄을 운영자가 채우는 것도 허용).
+    ov_path = base / "overrides.json"
+    if ov_path.exists():
+        try:
+            events, n_ov = apply_dub_overrides(events, read_json(ov_path))
+            log.info("반려 수정 병합: 더빙 대사 %d건 교체(overrides.json)", n_ov)
+        except Exception as e:  # noqa: BLE001 — 병합 실패가 더빙을 죽이지 않게(원문대로 진행)
+            log.warning("overrides.json 병합 실패(무시하고 원문 진행): %s", e)
+    # 한글 대역(관제 검수 카드용, 8/14): 더빙 대사 KO⇄JA 쌍. idx 는 검수함 '수정 재렌더'
+    # 오버라이드의 좌표로도 쓰인다. B 루트는 translations.json 이 있지만 C 루트는 여기가 유일.
+    write_json({"subs": [{"idx": i, "start": e["start"], "ko": s["text"], "ja": e["text"]}
+                         for i, (s, e) in enumerate(zip(segs, events))]},
+               base / "ko_ja_pairs.json")
+    events = [e for e in events if e["text"].strip()]   # 지문만이던 세그(요음!→（もぐもぐ）) 제거
 
     # self-ref: 이 영상의 원본 목소리를 레퍼런스로(음색 은행보다 정확).
     # 실패 시 → 은행에서 이 영상 목소리에 '음향적으로 가장 가까운' 레퍼런스 자동 선택(refbank).
