@@ -4,6 +4,8 @@
 - 무거운 의존성(numpy/cv2/torch/yaml/anthropic ...)은 **함수 안에서 lazy import**.
   → 의존성 미설치 환경에서도 모듈 import 와 --help, 순수 로직 테스트가 동작한다.
 - ffmpeg 는 시스템 CLI(subprocess)로 호출(가장 견고). 설치 필요: `ffmpeg`, `ffprobe`.
+  바이너리는 `FFMPEG_BIN`/`FFPROBE_BIN` 환경변수(.env 가능)로 교체 가능 — 자막 번인은
+  libass 포함 빌드가 필요하다(`ffmpeg_bin`/`has_ass_filter` 참고).
 """
 from __future__ import annotations
 
@@ -133,10 +135,61 @@ def read_json(path: str | os.PathLike) -> Any:
 
 
 # ── ffmpeg / ffprobe (subprocess) ───────────────────────────────────────────
+def ffmpeg_bin() -> str:
+    """ffmpeg 실행 파일 — FFMPEG_BIN(환경변수/.env)으로 빌드 지정, 없으면 PATH 의 ffmpeg.
+
+    PATH 의 ffmpeg 가 libass 없이 빌드된 머신(예: homebrew ffmpeg 8)은 ass 필터가
+    없어 자막 번인이 실패한다 → FFMPEG_BIN 으로 libass 포함 빌드를 가리킨다.
+    """
+    load_env()
+    return os.environ.get("FFMPEG_BIN") or "ffmpeg"
+
+
+def ffprobe_bin() -> str:
+    """ffprobe — FFPROBE_BIN 우선, 없으면 FFMPEG_BIN 옆의 ffprobe, 최후 PATH."""
+    load_env()
+    explicit = os.environ.get("FFPROBE_BIN")
+    if explicit:
+        return explicit
+    fb = os.environ.get("FFMPEG_BIN")
+    if fb:
+        sibling = Path(fb).parent / "ffprobe"
+        if sibling.is_file():
+            return str(sibling)
+    return "ffprobe"
+
+
 def has_ffmpeg() -> bool:
     from shutil import which
 
-    return which("ffmpeg") is not None and which("ffprobe") is not None
+    return which(ffmpeg_bin()) is not None and which(ffprobe_bin()) is not None
+
+
+_ASS_FILTER_CACHE: dict[str, bool] = {}
+
+
+def has_ass_filter(ffmpeg: Optional[str] = None) -> bool:
+    """해당 ffmpeg 빌드에 ass(libass) 필터가 있는가 — 자막 번인 가능 여부.
+
+    libass 없이 빌드된 ffmpeg 는 `-h filter=ass` 에 "Unknown filter" 를 내면서도
+    종료코드 0 을 반환하므로 출력 문자열로 판별한다.
+    """
+    b = ffmpeg or ffmpeg_bin()
+    if b not in _ASS_FILTER_CACHE:
+        try:
+            r = subprocess.run([b, "-hide_banner", "-h", "filter=ass"],
+                               capture_output=True, text=True)
+            _ASS_FILTER_CACHE[b] = "Filter ass" in (r.stdout + r.stderr)
+        except OSError:
+            _ASS_FILTER_CACHE[b] = False
+    return _ASS_FILTER_CACHE[b]
+
+
+def ass_filter_hint(ffmpeg: str) -> str:
+    """ass 필터 부재 시 사용자 안내 문구(에러 메시지 공용)."""
+    return (f"ffmpeg('{ffmpeg}') 빌드에 ass 필터(libass) 없음 → 자막 번인 불가. "
+            "libass 포함 빌드를 FFMPEG_BIN 환경변수(.env 가능)로 지정하세요 "
+            "(예: FFMPEG_BIN=/opt/homebrew/opt/ffmpeg@7/bin/ffmpeg).")
 
 
 def _run(cmd: list[str], quiet: bool = True) -> None:
@@ -152,7 +205,7 @@ def _run(cmd: list[str], quiet: bool = True) -> None:
 def probe(video: str | os.PathLike) -> dict[str, Any]:
     """ffprobe 로 영상 메타 추출 → {width,height,fps,nb_frames,duration}."""
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json",
+        [ffprobe_bin(), "-v", "error", "-print_format", "json",
          "-show_streams", "-show_format", str(video)],
         check=True, capture_output=True, text=True,
     ).stdout
@@ -184,7 +237,7 @@ def extract_frames(video: str | os.PathLike, out_dir: str | os.PathLike,
                    pattern: str = "%06d.png", start_number: int = 0) -> Path:
     """모든 프레임을 무손실 PNG 시퀀스로 추출. 반환: out_dir."""
     out = ensure_dir(out_dir)
-    _run(["ffmpeg", "-y", "-i", str(video), "-start_number", str(start_number),
+    _run([ffmpeg_bin(), "-y", "-i", str(video), "-start_number", str(start_number),
           "-vsync", "0", str(out / pattern)])
     return out
 
@@ -195,7 +248,7 @@ def extract_audio(video: str | os.PathLike, out_wav: str | os.PathLike) -> Optio
         return None
     out = Path(out_wav)
     ensure_dir(out.parent)
-    _run(["ffmpeg", "-y", "-i", str(video), "-vn", "-acodec", "pcm_s16le", str(out)])
+    _run([ffmpeg_bin(), "-y", "-i", str(video), "-vn", "-acodec", "pcm_s16le", str(out)])
     return out
 
 
@@ -206,7 +259,7 @@ def frames_to_video(frames_dir: str | os.PathLike, out: str | os.PathLike, fps: 
     """프레임 시퀀스 → 영상. ffv1=무손실 중간본, libx264/265/av1=최종."""
     out = Path(out)
     ensure_dir(out.parent)
-    cmd = ["ffmpeg", "-y", "-framerate", str(fps), "-start_number", str(start_number),
+    cmd = [ffmpeg_bin(), "-y", "-framerate", str(fps), "-start_number", str(start_number),
            "-i", str(Path(frames_dir) / pattern), "-c:v", codec]
     if crf is not None and codec != "ffv1":
         cmd += ["-crf", str(crf)]
@@ -223,10 +276,10 @@ def mux_audio(video: str | os.PathLike, audio: Optional[str | os.PathLike],
     out = Path(out)
     ensure_dir(out.parent)
     if audio is None:
-        _run(["ffmpeg", "-y", "-i", str(video), "-c", "copy",
+        _run([ffmpeg_bin(), "-y", "-i", str(video), "-c", "copy",
               "-movflags", "+faststart", str(out)])
         return out
-    _run(["ffmpeg", "-y", "-i", str(video), "-i", str(audio),
+    _run([ffmpeg_bin(), "-y", "-i", str(video), "-i", str(audio),
           "-c:v", "copy", "-c:a", "aac", "-shortest", "-map", "0:v:0", "-map", "1:a:0",
           "-movflags", "+faststart", str(out)])
     return out
@@ -250,11 +303,11 @@ def mux_dub(video: str | os.PathLike, dub_audio: str | os.PathLike,
     out = Path(out)
     ensure_dir(out.parent)
     if bg_audio is not None:
-        cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(bg_audio), "-i", str(dub_audio)]
+        cmd = [ffmpeg_bin(), "-y", "-i", str(video), "-i", str(bg_audio), "-i", str(dub_audio)]
         pre = (f"[1:a]volume={bg_volume}[bg];[2:a]volume={voice_volume}[voc];"
                f"[bg][voc]amix=inputs=2:duration=first:normalize=0")
     else:
-        cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(dub_audio)]
+        cmd = [ffmpeg_bin(), "-y", "-i", str(video), "-i", str(dub_audio)]
         pre = (f"[0:a]volume={bg_volume}[bg];[1:a]volume={voice_volume}[voc];"
                f"[bg][voc]amix=inputs=2:duration=first:normalize=0")
     if loudnorm:
@@ -282,9 +335,15 @@ def burn_subtitles(video: str | os.PathLike, ass_path: str | os.PathLike,
     af = f"ass={ass_path}"
     if fonts_dir:
         af += f":fontsdir={fonts_dir}"
-    _run(["ffmpeg", "-y", "-i", str(video), "-vf", af,
-          "-c:v", "libx264", "-crf", str(crf), "-pix_fmt", pix_fmt,
-          "-c:a", "copy", "-movflags", "+faststart", str(out)])
+    ffmpeg = ffmpeg_bin()
+    try:
+        _run([ffmpeg, "-y", "-i", str(video), "-vf", af,
+              "-c:v", "libx264", "-crf", str(crf), "-pix_fmt", pix_fmt,
+              "-c:a", "copy", "-movflags", "+faststart", str(out)])
+    except subprocess.CalledProcessError:
+        if not has_ass_filter(ffmpeg):
+            raise RuntimeError(ass_filter_hint(ffmpeg)) from None
+        raise
     return out
 
 

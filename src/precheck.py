@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from typing import Any  # noqa: E402
 
-from engine.common import get_logger, write_json, resolve_path, ensure_dir  # noqa: E402
+from engine.common import ffmpeg_bin, get_logger, write_json, resolve_path, ensure_dir  # noqa: E402
 
 log = get_logger("precheck")
 
@@ -140,7 +140,7 @@ def _sample_frames(video: str, n: int, tmp: pathlib.Path) -> list[pathlib.Path]:
     for i in range(n):
         t = dur * (i + 0.5) / n if dur > 0 else 0
         fp = tmp / f"pc_{i:03d}.png"
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.3f}", "-i", video,
+        subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-ss", f"{t:.3f}", "-i", video,
                         "-frames:v", "1", str(fp)], check=True)
         if fp.exists():
             outs.append(fp)

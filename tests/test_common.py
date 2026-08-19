@@ -47,6 +47,48 @@ def test_get_secret_fallback_and_optional():
         os.environ.pop("FALLBACK_K", None)
 
 
+def _isolate_ffmpeg_env(monkeypatch):
+    """머신 .env 의 FFMPEG_BIN 이 테스트에 새지 않게 load_env 차단 + 환경 제거."""
+    monkeypatch.setattr(common, "load_env", lambda *a, **k: None)
+    monkeypatch.delenv("FFMPEG_BIN", raising=False)
+    monkeypatch.delenv("FFPROBE_BIN", raising=False)
+
+
+def test_ffmpeg_bin_env_override(monkeypatch):
+    _isolate_ffmpeg_env(monkeypatch)
+    assert common.ffmpeg_bin() == "ffmpeg"
+    monkeypatch.setenv("FFMPEG_BIN", "/opt/x/bin/ffmpeg")
+    assert common.ffmpeg_bin() == "/opt/x/bin/ffmpeg"
+
+
+def test_ffprobe_bin_sibling_inference(monkeypatch):
+    """FFPROBE_BIN 미지정 시 FFMPEG_BIN 옆의 ffprobe 를 추론(존재할 때만)."""
+    _isolate_ffmpeg_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setenv("FFMPEG_BIN", str(pathlib.Path(d) / "ffmpeg"))
+        assert common.ffprobe_bin() == "ffprobe"          # 형제 없음 → PATH 폴백
+        sib = pathlib.Path(d) / "ffprobe"
+        sib.write_text("")
+        assert common.ffprobe_bin() == str(sib)           # 형제 존재 → 추론
+        monkeypatch.setenv("FFPROBE_BIN", "/opt/y/bin/ffprobe")
+        assert common.ffprobe_bin() == "/opt/y/bin/ffprobe"  # 명시가 최우선
+
+
+def test_has_ass_filter_detection_and_cache():
+    """출력 문자열 기반 판별(종료코드 0 이어도 Unknown filter 면 False) + 캐시."""
+    with tempfile.TemporaryDirectory() as d:
+        good = pathlib.Path(d) / "ffmpeg_good"
+        good.write_text("#!/bin/sh\necho 'Filter ass'\n")
+        bad = pathlib.Path(d) / "ffmpeg_bad"
+        bad.write_text("#!/bin/sh\necho \"Unknown filter 'ass'.\"\n")
+        for p in (good, bad):
+            p.chmod(0o755)
+        assert common.has_ass_filter(str(good)) is True
+        assert common.has_ass_filter(str(bad)) is False
+        assert common.has_ass_filter(str(pathlib.Path(d) / "none")) is False  # OSError → False
+    assert common.has_ass_filter(str(good)) is True       # 파일 삭제 후에도 캐시로 응답
+
+
 def _capture_run():
     """common._run 를 스텁해 ffmpeg 명령을 캡처(실제 실행/ffmpeg/미디어 불필요)."""
     calls = []

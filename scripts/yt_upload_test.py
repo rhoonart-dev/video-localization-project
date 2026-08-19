@@ -29,7 +29,7 @@ import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from engine.common import ensure_dir, get_secret, resolve_path  # noqa: E402
+from engine.common import ensure_dir, ffmpeg_bin, get_secret, resolve_path  # noqa: E402
 
 SCOPE = "https://www.googleapis.com/auth/youtube"   # upload + update(공개 전환 시도)
 TOKEN_CACHE = resolve_path("outputs/yt_oauth_token.json")
@@ -150,7 +150,7 @@ def make_test_clip() -> pathlib.Path:
     """중립 테스트 클립(컬러바+톤 2초, 세로) — IP 콘텐츠를 테스트에 쓰지 않는다."""
     out = resolve_path("outputs/upload_test.mp4")
     if not out.exists():
-        subprocess.run(["ffmpeg", "-y", "-v", "error",
+        subprocess.run([ffmpeg_bin(), "-y", "-v", "error",
                         "-f", "lavfi", "-i", "smptebars=size=720x1280:rate=24",
                         "-f", "lavfi", "-i", "sine=frequency=440",
                         "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
