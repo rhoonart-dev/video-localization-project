@@ -46,6 +46,8 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # core. OCR/인페인팅 백엔드는 주석 참고해 추가
 cp .env.example .env                      # LLM_API_KEY 등 채우기 (코드 하드코딩 금지)
 # 시스템 의존: ffmpeg / ffprobe, (인페인팅) NVIDIA CUDA GPU 권장
+#   ⚠ 자막·텔롭 번인은 libass 포함 ffmpeg 빌드 필요(ass 필터). PATH 의 빌드에 없으면
+#   FFMPEG_BIN 환경변수(.env 가능)로 지정 — 예: FFMPEG_BIN=/opt/homebrew/opt/ffmpeg@7/bin/ffmpeg
 ```
 
 인페인팅 백엔드:

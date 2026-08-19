@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from typing import Any, Optional  # noqa: E402
 
-from engine.common import ensure_dir, get_logger, read_json, resolve_path, write_json  # noqa: E402
+from engine.common import ensure_dir, ffmpeg_bin, get_logger, read_json, resolve_path, write_json  # noqa: E402
 
 log = get_logger("refbank")
 
@@ -98,7 +98,7 @@ def _clean_cut(src_wav: str, start: float, end: float, out_wav: pathlib.Path,
     st = max(0.0, start - pad)
     dur = (end + pad) - st
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-ss", f"{st:.3f}", "-t", f"{dur:.3f}",
+        [ffmpeg_bin(), "-y", "-v", "error", "-ss", f"{st:.3f}", "-t", f"{dur:.3f}",
          "-i", src_wav, "-af", "highpass=f=60,afftdn=nf=-25,dynaudnorm=p=0.7:m=10",
          "-ac", "1", "-ar", "32000", str(out_wav)], check=True)
 

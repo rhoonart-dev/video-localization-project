@@ -36,7 +36,8 @@ from typing import Any, Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from engine.common import ensure_dir, get_logger, load_config, resolve_path  # noqa: E402
+from engine.common import (ass_filter_hint, ensure_dir, ffmpeg_bin, ffprobe_bin,  # noqa: E402
+                           get_logger, has_ass_filter, load_config, resolve_path)
 
 log = get_logger("convert_short")
 
@@ -180,7 +181,7 @@ def audio_graph(n_tts: int, spans: list[tuple[float, float]], gain: float = 0.3)
 
 # ───────── 실행부 ─────────
 def _probe_duration(path: str) -> float:
-    r = subprocess.run(["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+    r = subprocess.run([ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration",
                         "-of", "csv=p=0", str(path)], capture_output=True, text=True)
     try:
         return float(r.stdout.strip())
@@ -244,11 +245,14 @@ def convert(video: str, plan_path: str, out_path: str, config: dict[str, Any],
     fonts = config.get("paths", {}).get("fonts_dir")
     burned = work / "ja_burned.mp4"
     vf = f"ass={ass_path}" + (f":fontsdir={resolve_path(fonts)}" if fonts else "")
-    r = subprocess.run(["ffmpeg", "-y", "-i", video, "-vf", vf,
+    ffmpeg = ffmpeg_bin()
+    r = subprocess.run([ffmpeg, "-y", "-i", video, "-vf", vf,
                         "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
                         "-c:a", "copy", "-movflags", "+faststart", str(burned)],
                        capture_output=True, text=True, timeout=1800)
     if r.returncode != 0:
+        if not has_ass_filter(ffmpeg):
+            raise RuntimeError(ass_filter_hint(ffmpeg))
         raise RuntimeError(f"자막 번인 실패: {(r.stderr or '')[-300:]}")
 
     # ② 오디오: 나레이션 cue 에 일본어 TTS + 원본 덕킹. cue 가 없거나 --no-dub 면 그대로.
@@ -274,7 +278,7 @@ def convert(video: str, plan_path: str, out_path: str, config: dict[str, Any],
 
     gain = float(config.get("jp_convert", {}).get("duck_volume", 0.3))
     graph = audio_graph(len(seg_files), spans, gain)
-    cmd = ["ffmpeg", "-y", "-i", str(burned)]
+    cmd = [ffmpeg_bin(), "-y", "-i", str(burned)]
     for f in seg_files:
         cmd += ["-i", f]
     cmd += ["-filter_complex", graph, "-map", "0:v", "-map", "[aout]",

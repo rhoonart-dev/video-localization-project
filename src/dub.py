@@ -928,7 +928,7 @@ def build_self_ref(video: str, segs: list[dict[str, Any]], config: dict[str, Any
           + f"concat=n={len(picked)}:v=0:a=1,"
           + "highpass=f=60,afftdn=nf=-25,dynaudnorm=p=0.7:m=10[out]")
     seg_wav = out_dir / "self_seg.wav"
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(voc), "-filter_complex", fc,
+    subprocess.run([common.ffmpeg_bin(), "-y", "-v", "error", "-i", str(voc), "-filter_complex", fc,
                     "-map", "[out]", "-ac", "1", "-ar", "32000", str(seg_wav)], check=True)
     dur = float(common.probe(seg_wav).get("duration", 0.0) or 0.0)
     n = loop_plan(dur)
@@ -941,7 +941,7 @@ def build_self_ref(video: str, segs: list[dict[str, Any]], config: dict[str, Any
         inputs = ["-i", str(seg_wav), "-f", "lavfi", "-t", "0.15",
                   "-i", "anullsrc=r=32000:cl=mono"]
         seq = "".join(["[0:a]" if i % 2 == 0 else "[1:a]" for i in range(2 * n - 1)])
-        subprocess.run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex",
+        subprocess.run([common.ffmpeg_bin(), "-y", "-v", "error", *inputs, "-filter_complex",
                         f"{seq}concat=n={2 * n - 1}:v=0:a=1", "-ar", "32000", "-ac", "1",
                         str(ref)], check=True)
     text = " ".join(s["text"] for s in picked)
@@ -958,7 +958,7 @@ def _mute_windows(in_path: Path, out_path: Path, windows: list[tuple[float, floa
         out_path.write_bytes(Path(in_path).read_bytes())
         return
     expr = "+".join(f"between(t,{s:.3f},{e:.3f})" for s, e in windows)   # OR(합>0)
-    subprocess.run(["ffmpeg", "-y", "-i", str(in_path), "-af", f"volume=0:enable='{expr}'",
+    subprocess.run([common.ffmpeg_bin(), "-y", "-i", str(in_path), "-af", f"volume=0:enable='{expr}'",
                     str(out_path)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -966,7 +966,7 @@ def _mix_two(a: Path, b: Path, out: Path) -> None:
     """두 오디오 합성(정규화 없이 합산). 반주(no_vocals) + 리액션(대사 제거 보컬)."""
     import subprocess
 
-    subprocess.run(["ffmpeg", "-y", "-i", str(a), "-i", str(b), "-filter_complex",
+    subprocess.run([common.ffmpeg_bin(), "-y", "-i", str(a), "-i", str(b), "-filter_complex",
                     "amix=inputs=2:duration=longest:normalize=0", str(out)],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -1189,7 +1189,7 @@ def _fit_audio(in_path: Path, out_path: Path, target_sec: float, max_speedup: fl
         if abs(speed - 1.0) < 0.05:                # 충분히 근접 → 그대로
             out_path.write_bytes(in_path.read_bytes())
         else:
-            subprocess.run(["ffmpeg", "-y", "-i", str(in_path), "-filter:a",
+            subprocess.run([common.ffmpeg_bin(), "-y", "-i", str(in_path), "-filter:a",
                             atempo_filters(speed), str(out_path)],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if max_len is not None:                         # 침범 방지 캡
@@ -1197,7 +1197,7 @@ def _fit_audio(in_path: Path, out_path: Path, target_sec: float, max_speedup: fl
         if _needs_truncate(cur, max_len):
             tmp = out_path.with_suffix(".cap" + out_path.suffix)
             fade_st = max(0.0, max_len - 0.12)
-            subprocess.run(["ffmpeg", "-y", "-i", str(out_path), "-t", f"{max_len:.3f}",
+            subprocess.run([common.ffmpeg_bin(), "-y", "-i", str(out_path), "-t", f"{max_len:.3f}",
                             "-af", f"afade=t=out:st={fade_st:.3f}:d=0.12", str(tmp)],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             tmp.replace(out_path)
@@ -1244,7 +1244,7 @@ def brighten_track(wav: Path, target_centroid: float, config: dict[str, Any]) ->
         af = (f"highshelf=f={shelf_hz}:g={gain:.1f},"
               f"equalizer=f={presence_hz}:width_type=q:w=1.2:g={gain * 0.6:.1f},"
               f"alimiter=limit=0.97")
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(orig),
+        subprocess.run([common.ffmpeg_bin(), "-y", "-v", "error", "-i", str(orig),
                         "-af", af, str(wav)], check=True)
         out_cen = _cen(wav)
     orig.unlink(missing_ok=True)
@@ -1262,7 +1262,7 @@ def _assemble_timeline(seg_files: list[tuple[float, Path]], out: Path) -> None:
         raise RuntimeError("ffmpeg 필요(더빙 트랙 합성).")
     import subprocess
 
-    cmd: list[str] = ["ffmpeg", "-y"]
+    cmd: list[str] = [common.ffmpeg_bin(), "-y"]
     for _, fp in seg_files:
         cmd += ["-i", str(fp)]
     parts, labels = [], []

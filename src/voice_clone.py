@@ -26,7 +26,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from pathlib import Path  # noqa: E402
 
-from engine.common import ensure_dir, get_logger, get_secret, load_config, resolve_path  # noqa: E402
+from engine.common import ensure_dir, ffmpeg_bin, get_logger, get_secret, load_config, resolve_path  # noqa: E402
 
 log = get_logger("voice_clone")
 
@@ -87,7 +87,7 @@ def build_reference(plan: list[dict[str, Any]], out_path: str,
         labels.append(f"[{i}:a]")
     fc = ("".join(labels) + f"concat=n={len(plan)}:v=0:a=1,"
           f"loudnorm=I={loudnorm_i},aresample=44100[out]")
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", *inputs,
+    cmd = [ffmpeg_bin(), "-y", "-loglevel", "error", *inputs,
            "-filter_complex", fc, "-map", "[out]", "-ac", "1", out_path]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
@@ -104,7 +104,7 @@ def _compress_if_needed(path: str) -> tuple[str, str]:
     if upload_size_ok(p.stat().st_size):
         return str(p), "audio/wav" if p.suffix == ".wav" else "audio/mpeg"
     mp3 = p.with_suffix(".upload.mp3")
-    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(p),
+    r = subprocess.run([ffmpeg_bin(), "-y", "-loglevel", "error", "-i", str(p),
                         "-b:a", "192k", str(mp3)], capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         raise RuntimeError(f"레퍼런스 압축 실패: {r.stderr[-300:]}")

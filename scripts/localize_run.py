@@ -29,6 +29,9 @@ import time
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT))
+# engine.common 은 임포트 시 표준 라이브러리만 쓰므로 ai-video venv 에서도 안전하다.
+from engine.common import ass_filter_hint, ffmpeg_bin, ffprobe_bin, has_ass_filter  # noqa: E402
 
 
 def engine_path(env_key: str, sibling: str) -> Path:
@@ -234,7 +237,7 @@ def l2b_refine_timing(job: Path, telop_data: list, out_dir: Path, client) -> lis
         return []
     video = job / "shorts_ko.mp4"
     dur = float(subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        [ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
          "-of", "default=nw=1:nk=1", str(video)], capture_output=True, text=True).stdout.strip())
     frames_dir = out_dir / "refine_frames"
     frames_dir.mkdir(exist_ok=True)
@@ -249,7 +252,7 @@ def l2b_refine_timing(job: Path, telop_data: list, out_dir: Path, client) -> lis
     for i, t in enumerate(ts):
         fp = frames_dir / f"f{i:03d}.jpg"
         if not fp.exists():
-            subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", str(t), "-i", str(video),
+            subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-ss", str(t), "-i", str(video),
                             "-frames:v", "1", "-vf", "scale=360:-1", str(fp)], check=True)
         frame_paths.append(fp)
 
@@ -508,7 +511,7 @@ def l3_apply(job: Path, backup: Path, translation: dict, telop_data: list,
 def _audio_dur(p: Path) -> float:
     try:
         return float(subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", str(p)], capture_output=True, text=True).stdout.strip())
     except ValueError:
         return 0.0
@@ -641,7 +644,7 @@ def l4_render(job: Path, wcfg: dict, locale_cfg: dict, out_dir: Path):
     # 컷 재현 검증 — 원본과 길이가 다르면 자막 싱크가 깨진 것 (SPIKE §설계수정-2)
     def dur(p):
         return float(subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", str(p)], capture_output=True, text=True).stdout.strip())
     d_ko, d_ja = dur(job / "shorts_ko.mp4"), dur(rendered)
     if abs(d_ko - d_ja) > 0.05:
@@ -654,13 +657,16 @@ def l4_render(job: Path, wcfg: dict, locale_cfg: dict, out_dir: Path):
     shutil.move(rendered, notelop)
     ass_arg = str(telop_ass).replace(":", "\\:")
     fonts_arg = str(FONTS_DIR).replace(":", "\\:")
+    ffmpeg = ffmpeg_bin()
     r2 = subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", str(notelop),
+        [ffmpeg, "-y", "-v", "error", "-i", str(notelop),
          "-vf", f"ass='{ass_arg}':fontsdir='{fonts_arg}'",
          "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-c:a", "copy",
          str(rendered)], capture_output=True, text=True, timeout=600)
     if r2.returncode != 0:
         shutil.move(notelop, rendered)          # 원복
+        if not has_ass_filter(ffmpeg):
+            raise RuntimeError(ass_filter_hint(ffmpeg))
         raise RuntimeError(f"텔롭 번인 실패: {r2.stderr[-500:]}")
     print(f"[L4] 텔롭 번인 완료 → shorts.mp4 (중간본 shorts_ja_notelop.mp4 보존)")
 

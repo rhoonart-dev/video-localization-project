@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from engine.common import get_logger, resolve_path, write_json
+from engine.common import ffmpeg_bin, ffprobe_bin, get_logger, resolve_path, write_json
 
 log = get_logger("qa_compare")
 
@@ -110,7 +110,7 @@ def content_top_from_motion(counts: list[int], min_hits: int = 5,
 def _duration(path: str) -> float:
     import subprocess
 
-    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+    r = subprocess.run([ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
                         "-of", "csv=p=0", path], capture_output=True, text=True, timeout=60)
     return float(r.stdout.strip() or 0)
 
@@ -120,7 +120,7 @@ def _frame_png(video: str, t: float, scale_w: int = 540) -> bytes:
     import tempfile
 
     out = tempfile.mktemp(suffix=".png")
-    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{t:.2f}",
+    r = subprocess.run([ffmpeg_bin(), "-y", "-loglevel", "error", "-ss", f"{t:.2f}",
                         "-i", video, "-frames:v", "1", "-vf", f"scale={scale_w}:-1", out],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
@@ -169,7 +169,7 @@ def measure_content_top(video: str, samples: int = 9, scale: tuple[int, int] = (
     for i in range(samples):
         t = dur * (i + 0.5) / samples
         out = tempfile.mktemp(suffix=".png")
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", video,
+        subprocess.run([ffmpeg_bin(), "-y", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", video,
                         "-frames:v", "1", "-vf", f"scale={w}:{h}", out],
                        capture_output=True, timeout=120)
         img = cv2.imread(out, cv2.IMREAD_GRAYSCALE)
