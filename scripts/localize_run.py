@@ -33,6 +33,11 @@ sys.path.insert(0, str(PROJECT))
 # engine.common 은 임포트 시 표준 라이브러리만 쓰므로 ai-video venv 에서도 안전하다.
 from engine.common import ass_filter_hint, ffmpeg_bin, ffprobe_bin, has_ass_filter  # noqa: E402
 
+# 줄 스타일·타이밍 오버라이드 계약(docs/subtitle-style-overrides.md)의 검증·ASS 태그는
+# 두 경로(SHOTCONE·잔망루피) 공용 — engine/render 는 import 시점에 stdlib 만 쓴다.
+from engine.render import (style_ass_tags, style_margin_v,  # noqa: E402
+                           validate_line_style, validate_line_timing)
+
 
 def engine_path(env_key: str, sibling: str) -> Path:
     """형제 엔진 디렉토리 해석 — 환경변수 우선, 없으면 이 레포의 형제. 순수(테스트 대상).
@@ -433,8 +438,15 @@ def _fmt_ts(sec: float) -> str:
 
 
 def build_telop_ass(telop_data: list, translation: dict, font: str, out_path: Path) -> int:
-    """방송 텔롭의 일본어 병기 트랙. 대사(430)·TTS(580)와 겹치지 않게 MarginV 720 고정,
-    반투명 박스(BorderStyle=3)로 원본 텔롭과 시각적으로 구분한다."""
+    """방송 텔롭의 일본어 병기 트랙. 대사(430)·TTS(580)와 겹치지 않게 MarginV 720 기본,
+    반투명 박스(BorderStyle=3)로 원본 텔롭과 시각적으로 구분한다.
+
+    (8/20) 검수 수정이 translation.telops 항목에 실은 줄 오버라이드 반영:
+    · style {size,y,color,rotate} → 인라인 태그(\\fs·\\1c·\\frz — 계약 rotate 는 시계방향
+      양수, ASS \\frz 는 반시계 양수라 부호 반전은 태그 조립(style_ass_tags)이 책임)
+      + y 는 이벤트 MarginV(=(1−y)×1920, Telop 스타일이 하단 정렬이라 MarginV 방식).
+    · start_sec/end_sec → L2b 재보정 타이밍보다 우선(사람이 보고 정한 값).
+    태그는 _ass_escape 밖에서 조립한다 — 이스케이프가 { } 를 바꾼다."""
     telops = [t for t in telop_data if t.get("kind") == "broadcast_telop"] \
         if telop_data and "orig_index" not in telop_data[0] else telop_data
     by_index = {t["index"]: t for t in translation.get("telops", [])}
@@ -443,8 +455,14 @@ def build_telop_ass(telop_data: list, translation: dict, font: str, out_path: Pa
         tr = by_index.get(t.get("orig_index", i))
         if not tr or not tr.get("use") or not tr.get("ja"):
             continue
-        lines.append(f"Dialogue: 0,{_fmt_ts(float(t['start_sec']))},{_fmt_ts(float(t['end_sec']))},"
-                     f"Telop,,0,0,0,, {_ass_escape(tr['ja'])}")
+        start = float(tr["start_sec"]) if tr.get("start_sec") is not None else float(t["start_sec"])
+        end = float(tr["end_sec"]) if tr.get("end_sec") is not None else float(t["end_sec"])
+        style = tr.get("style") or {}
+        tags = style_ass_tags(style, 1920) if style else ""
+        margin_v = style_margin_v(style, 1920) if style else 0
+        tag_block = f"{{{tags}}}" if tags else ""
+        lines.append(f"Dialogue: 0,{_fmt_ts(start)},{_fmt_ts(end)},"
+                     f"Telop,,0,0,{margin_v},, {tag_block}{_ass_escape(tr['ja'])}")
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -468,9 +486,19 @@ def l3_apply(job: Path, backup: Path, translation: dict, telop_data: list,
     segments = json.loads((backup / "subtitle_segments.json").read_text(encoding="utf-8"))
     for seg, tr in zip(segments, translation["segments"]):
         seg["text"] = tr["ja"]
+        # 줄 스타일·타이밍(8/20 검수 수정): subtitle_segments.json 에 전사 —
+        # ai-video(v3 캐시 규약) 렌더가 이 파일의 style 을 그대로 소비한다.
+        if tr.get("style"):
+            seg["style"] = tr["style"]
+        user_timing = tr.get("start_sec") is not None or tr.get("end_sec") is not None
+        if tr.get("start_sec") is not None:
+            seg["start_sec"] = float(tr["start_sec"])
+        if tr.get("end_sec") is not None:
+            seg["end_sec"] = float(tr["end_sec"])
         # ASR 환각성 초장 구간 방어 — 짧은 대사가 10초 넘게 떠 있으면 어색하다(파일럿 _74 실측 22s).
+        # 사용자 지정 타이밍이 있으면 클램프를 건너뛴다 — 사람이 보고 정한 값이 이긴다.
         span = float(seg["end_sec"]) - float(seg["start_sec"])
-        if span > 8.0 and len(tr["ja"]) <= 20:
+        if not user_timing and span > 8.0 and len(tr["ja"]) <= 20:
             seg["end_sec"] = float(seg["start_sec"]) + 4.0
     (job / "subtitle_segments.json").write_text(
         json.dumps(segments, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -676,9 +704,18 @@ def l4_render(job: Path, wcfg: dict, locale_cfg: dict, out_dir: Path):
 def build_ko_ja_pairs(backup: Path, out_dir: Path, translation: dict,
                       max_items: int = 40) -> dict:
     """한글⇄일본어 대역(8/14 사용자 요청) — 관제 검수 카드에서 일본어 제목·자막을
-    한글과 나란히 본다. 원문은 백업(KO)·L2 텔롭에서, 번역은 translation 에서.
+    한글과 나란히 본다. 원문은 백업(KO)·L2b 텔롭에서, 번역은 translation 에서.
     idx(8/14 반려-수정): 각 항목의 idx 는 translation 각 목록의 index 필드와 같은
     좌표다 — 검수함 '수정 재렌더'의 overrides 가 이 좌표로 돌아온다(apply_overrides).
+
+    (8/20 확장 — 편집실 WYSIWYG 초기값)
+    · subs: end 동봉 — 클램프(8s/20자)·오버라이드 반영 후의 **실표시 값**(l3_apply 와
+      같은 규칙). style 오버라이드가 있으면 동봉.
+    · tts: cue 의 start/end(계획 창) 동봉.
+    · telops: 소스를 onscreen_refined.json(실렌더 목록)로 바꾸고 **idx = orig_index**
+      (= translation.telops 의 index 좌표). ⚠ 이 판부터 좌표가 orig_index 다 — 종전엔
+      onscreen.json 원시 순번(kind 필터 없음)이라 translation 좌표와 어긋났다(버그).
+      start/end(재보정·오버라이드 반영)·style 동봉.
     실패는 조용히 비운다(대역은 검수 편의지 렌더 정본이 아니다). 순수 — 테스트 대상."""
     pairs = {"top_title": None, "subs": [], "tts": [], "telops": []}
     try:
@@ -690,26 +727,48 @@ def build_ko_ja_pairs(backup: Path, out_dir: Path, translation: dict,
     try:
         segs = json.loads((backup / "subtitle_segments.json").read_text(encoding="utf-8"))
         for i, (seg, tr) in enumerate(list(zip(segs, translation.get("segments") or []))[:max_items]):
-            pairs["subs"].append({"idx": tr.get("index", i), "start": seg.get("start_sec"),
-                                  "ko": seg.get("text"), "ja": tr.get("ja")})
+            user_timing = tr.get("start_sec") is not None or tr.get("end_sec") is not None
+            start = float(tr["start_sec"]) if tr.get("start_sec") is not None \
+                else float(seg.get("start_sec", 0.0))
+            end = float(tr["end_sec"]) if tr.get("end_sec") is not None \
+                else float(seg.get("end_sec", 0.0))
+            ja = tr.get("ja") or ""
+            if not user_timing and (end - start) > 8.0 and len(ja) <= 20:
+                end = start + 4.0                     # l3_apply 클램프와 동일 = 실표시 값
+            row = {"idx": tr.get("index", i), "start": start, "end": end,
+                   "ko": seg.get("text"), "ja": tr.get("ja")}
+            if tr.get("style"):
+                row["style"] = tr["style"]
+            pairs["subs"].append(row)
     except Exception:
         pass
     try:
         resources = json.loads((backup / "checkpoint_resources.json").read_text(encoding="utf-8"))
-        cues = [c["cue"]["text"] for c in resources.get("tts_cue_files", [])]
+        cues = [c["cue"] for c in resources.get("tts_cue_files", [])]
         by_i = {t.get("index"): t for t in (translation.get("tts_cues") or [])}
-        for i, ko in enumerate(cues[:max_items]):
-            pairs["tts"].append({"idx": i, "ko": ko, "ja": (by_i.get(i) or {}).get("ja")})
+        for i, cue in enumerate(cues[:max_items]):
+            pairs["tts"].append({"idx": i, "start": cue.get("start_sec"),
+                                 "end": cue.get("end_sec"), "ko": cue.get("text"),
+                                 "ja": (by_i.get(i) or {}).get("ja")})
     except Exception:
         pass
     try:
-        telops = json.loads((out_dir / "onscreen.json").read_text(encoding="utf-8"))
+        telops = json.loads((out_dir / "onscreen_refined.json").read_text(encoding="utf-8"))
         by_idx = {t.get("index"): t for t in (translation.get("telops") or [])}
-        for i, t in enumerate(telops[:max_items]):
-            tr = by_idx.get(i) or {}
+        for t in telops[:max_items]:
+            idx = t.get("orig_index")
+            tr = by_idx.get(idx) or {}
             if tr.get("use") is False:
                 continue
-            pairs["telops"].append({"idx": i, "ko": t.get("text_ko"), "ja": tr.get("ja")})
+            start = float(tr["start_sec"]) if tr.get("start_sec") is not None \
+                else t.get("start_sec")
+            end = float(tr["end_sec"]) if tr.get("end_sec") is not None \
+                else t.get("end_sec")
+            row = {"idx": idx, "start": start, "end": end,
+                   "ko": t.get("text_ko"), "ja": tr.get("ja")}
+            if tr.get("style"):
+                row["style"] = tr["style"]
+            pairs["telops"].append(row)
     except Exception:
         pass
     return pairs
@@ -722,6 +781,11 @@ def apply_overrides(translation: dict, ov: dict) -> dict:
     · 문자열 필드: youtube_title_ja/_ko · description_ja/_ko · top_title_ja — 통째 교체.
     · subs{idx}→segments · tts{idx}→tts_cues · telops{idx}→telops: 값이 dict 면 항목에
       update(예: {"ja":"…","use":false}), 문자열이면 ja 만 교체. 없는 idx 는 무시.
+    · (8/20) subs·telops 의 dict 값은 style{size,y,color,rotate}·start_sec·end_sec 를
+      실을 수 있다(계약: docs/subtitle-style-overrides.md) — 타입·범위 위반, 모르는
+      style 키는 ValueError(fail-loud). **tts 의 style·start_sec/end_sec 는 후속 범위**
+      (ai-video 계약이 cue 단위 스타일을 안 받고, 타이밍은 재합성 창 재계산이 얽힌다)
+      — 조용히 무시하지 않고 즉시 거절한다.
     원본은 건드리지 않고 사본을 돌려준다. 순수 — 테스트 대상."""
     import copy
     out = copy.deepcopy(translation)
@@ -743,6 +807,14 @@ def apply_overrides(translation: dict, ov: dict) -> dict:
             if item is None:
                 continue
             if isinstance(v, dict):
+                v = dict(v)
+                if dst == "tts_cues" and ({"style", "start_sec", "end_sec"} & set(v)):
+                    raise ValueError(
+                        f"tts[{key}]: style/start_sec/end_sec 오버라이드는 아직 지원하지 "
+                        "않습니다(후속 — docs/subtitle-style-overrides.md)")
+                if v.get("style") is not None:
+                    v["style"] = validate_line_style(v["style"])   # 위반 = 즉시 실패
+                validate_line_timing(v)
                 item.update(v)
             elif isinstance(v, str) and v.strip():
                 item["ja"] = v.strip()

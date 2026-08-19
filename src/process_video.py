@@ -31,13 +31,18 @@ def _level_opts(config: dict[str, Any], level: str) -> dict[str, Any]:
 
 
 def _apply_subtitle_overrides(work: Path) -> int:
-    """검수 반려 '수정 재렌더'(8/14): overrides.json subs{idx: ja} 를 translations.json
-    entries[idx].target 에 반영 — 렌더(자막 그리기)가 이 파일을 읽기 직전에 병합한다.
+    """검수 반려 '수정 재렌더'(8/14): overrides.json subs{idx: …} 를 translations.json
+    entries[idx] 에 반영 — 렌더(자막 그리기)가 이 파일을 읽기 직전에 병합한다.
 
     idx 는 검수 카드 자막 순번(= entries 순번 — 관제 review_meta 가 translations.json
-    순서 그대로 카드에 보여준다). 값이 dict 면 {"ja": …}. 없는 idx·빈 값은 무시.
-    적용 건수 반환. 파일이 없으면 0(일반 처리 — 재렌더 아님)."""
+    순서 그대로 카드에 보여준다). 값이 dict 면 {"ja", "style", "start_sec", "end_sec"}
+    (계약: docs/subtitle-style-overrides.md — style·타이밍은 검증 실패 시 즉시 실패,
+    조용한 무시 금지), 문자열이면 ja 만. 없는 idx·빈 ja 는 무시. 적용 건수 반환.
+    파일이 없으면 0(일반 처리 — 재렌더 아님). entries 에 실린 style/start_sec/end_sec
+    는 render.attach_entry_overrides 가 이벤트로 전사한다."""
     import json as _json
+
+    from engine.render import validate_line_style, validate_line_timing
     ov_path = work / "overrides.json"
     tr_path = work / "translations.json"
     if not (ov_path.exists() and tr_path.exists()):
@@ -55,10 +60,25 @@ def _apply_subtitle_overrides(work: Path) -> int:
             i = int(key)
         except (TypeError, ValueError):
             continue
+        if not 0 <= i < len(entries):
+            continue
+        changed = False
         text = v.get("ja") if isinstance(v, dict) else v
-        if 0 <= i < len(entries) and isinstance(text, str) and text.strip():
+        if isinstance(text, str) and text.strip():
             entries[i]["target"] = text.strip()
-            n += 1
+            changed = True
+        if isinstance(v, dict):
+            if v.get("style") is not None:
+                entries[i]["style"] = validate_line_style(v["style"])   # 위반 = 즉시 실패
+                changed = True
+            start, end = validate_line_timing(v)
+            if start is not None:
+                entries[i]["start_sec"] = start
+                changed = True
+            if end is not None:
+                entries[i]["end_sec"] = end
+                changed = True
+        n += 1 if changed else 0
     if n:
         tr_path.write_text(_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     return n

@@ -127,6 +127,11 @@ class TranslationEntry:
     target: str                          # 채택 어미 미정 시 표준어+placeholder 가능
     notes: str = ""
     flagged: bool = False                # 네이티브 검수 필요 표시
+    # 줄 단위 오버라이드(검수 반려 수정, docs/subtitle-style-overrides.md) — 렌더가
+    # 이벤트에 전사한다(render.attach_entry_overrides). None = 오버라이드 없음.
+    style: Optional[dict[str, Any]] = None       # {size, y, color, rotate}
+    start_sec: Optional[float] = None            # 편집본 시간축 초
+    end_sec: Optional[float] = None
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "TranslationEntry":
@@ -135,6 +140,9 @@ class TranslationEntry:
             target=d.get("target", ""),
             notes=d.get("notes", ""),
             flagged=bool(d.get("flagged", False)),
+            style=d.get("style") or None,
+            start_sec=d.get("start_sec"),
+            end_sec=d.get("end_sec"),
         )
 
 

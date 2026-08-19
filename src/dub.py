@@ -123,9 +123,14 @@ def retime_events(events: list[dict[str, Any]], durs: list[float],
                   guard: float = 0.05) -> list[dict[str, Any]]:
     """자막 이벤트 끝시각을 '실제 더빙 길이'에 맞춤(자연 페이싱과 자막 일치).
 
-    다음 세그 시작 - guard 를 넘지 않게 클램프. 마지막 세그는 자유 연장."""
+    다음 세그 시작 - guard 를 넘지 않게 클램프. 마지막 세그는 자유 연장.
+    [규칙 신설 8/20] end_fixed(검수 반려 수정의 사용자 지정 end)는 **덮어쓰지 않는다**
+    — 사람이 보고 정한 표시 시간이 실측 더빙 길이·클램프보다 우선한다."""
     out = []
     for i, e in enumerate(events):
+        if e.get("end_fixed"):
+            out.append(dict(e))
+            continue
         end = e["start"] + (durs[i] if i < len(durs) and durs[i] > 0 else (e["end"] - e["start"]))
         if i + 1 < len(events):
             end = min(end, events[i + 1]["start"] - guard)
@@ -135,11 +140,16 @@ def retime_events(events: list[dict[str, Any]], durs: list[float],
 
 def apply_dub_overrides(events: list[dict[str, Any]],
                         ov: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
-    """검수 반려 '수정 재렌더'(8/14): overrides subs{idx: ja} 를 더빙 대사(events)에 병합.
+    """검수 반려 '수정 재렌더'(8/14): overrides subs{idx: …} 를 더빙 대사(events)에 병합.
 
     idx 는 ko_ja_pairs.json subs 의 idx(= ASR 세그 순번, 빈 대사 필터 **전**) — 검수함
-    카드가 보여준 좌표 그대로 돌아온다. 값이 dict 면 {"ja": …} 를 본다. 없는 idx·빈
-    문자열은 무시(운영자가 안 고친 줄). 사본 반환. 순수 — 테스트 대상."""
+    카드가 보여준 좌표 그대로 돌아온다. 값이 dict 면 {"ja", "style", "start_sec",
+    "end_sec"}(계약: docs/subtitle-style-overrides.md — 타입·범위 위반, 모르는 style
+    키는 ValueError). start/end 는 영상 시간축 초 — SRT 1차 기록 전에 병합돼야
+    페이싱 캡(segment_hard_caps)이 사용자 타이밍 기준으로 잡힌다. end 지정 세그는
+    end_fixed 표시 → retime_events 가 덮지 않는다. 없는 idx·빈 ja 는 무시(운영자가
+    안 고친 줄). 사본 반환. 순수 — 테스트 대상."""
+    from engine.render import validate_line_style, validate_line_timing
     subs = (ov or {}).get("subs") or {}
     out = [dict(e) for e in events]
     n = 0
@@ -148,11 +158,62 @@ def apply_dub_overrides(events: list[dict[str, Any]],
             i = int(key)
         except (TypeError, ValueError):
             continue
+        if not 0 <= i < len(out):
+            continue
+        changed = False
         text = v.get("ja") if isinstance(v, dict) else v
-        if 0 <= i < len(out) and isinstance(text, str) and text.strip():
+        if isinstance(text, str) and text.strip():
             out[i]["text"] = text.strip()
-            n += 1
+            changed = True
+        if isinstance(v, dict):
+            if v.get("style") is not None:
+                out[i]["style"] = validate_line_style(v["style"])       # 위반 = ValueError
+                changed = True
+            start, end = validate_line_timing(v)
+            if start is not None:
+                out[i]["start"] = start
+                changed = True
+            if end is not None:
+                out[i]["end"] = end
+                out[i]["end_fixed"] = True          # 사용자 값 우선 — retime 이 안 덮는다
+                changed = True
+        n += 1 if changed else 0
     return out, n
+
+
+def build_dub_pairs(segs: list[dict[str, Any]],
+                    events: list[dict[str, Any]]) -> dict[str, Any]:
+    """C 루트 ko_ja_pairs.json 확장 스키마(8/20) — 검수 카드·편집실 초기값용.
+
+    subs[]: {idx(ASR 세그 순번=오버라이드 좌표), start, end(초, 영상 시간축),
+             end_actual(False=계획값 — retime 전), ko, ja,
+             style(오버라이드 있을 때만), end_fixed(사용자 지정 end 일 때만)}.
+    오버라이드 병합 **후** 에 만들므로 start/end/style 은 현재 적용값이다. 순수."""
+    rows = []
+    for s, e in zip(segs, events):
+        row: dict[str, Any] = {"idx": e["idx"], "start": e["start"], "end": e["end"],
+                               "end_actual": False, "ko": s["text"], "ja": e["text"]}
+        if e.get("style"):
+            row["style"] = e["style"]
+        if e.get("end_fixed"):
+            row["end_fixed"] = True
+        rows.append(row)
+    return {"subs": rows}
+
+
+def update_pairs_actual_ends(pairs: dict[str, Any],
+                             events: list[dict[str, Any]]) -> dict[str, Any]:
+    """retime 후 실표시 end 를 ko_ja_pairs 에 반영 — end_actual=True 가 실측 표시값.
+
+    retime 안 거친 행(빈 대사로 필터된 세그)은 계획값(end_actual=False)으로 남는다.
+    사본 반환. 순수 — 테스트 대상."""
+    by_idx = {e.get("idx"): e for e in events if e.get("idx") is not None}
+    out = {**pairs, "subs": [dict(r) for r in pairs.get("subs", [])]}
+    for r in out["subs"]:
+        e = by_idx.get(r.get("idx"))
+        if e is not None:
+            r["end"], r["end_actual"] = e["end"], True
+    return out
 
 
 def _needs_truncate(dur: float, max_len: Optional[float]) -> bool:
@@ -1021,12 +1082,14 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     # 한글 잔존 교정 + 괄호 지문 제거: LLM 이 고유명사(마라엽'떡')를 한글로 남기거나
     # 지문(（もぐもぐ）)을 넣으면 더빙이 억지 발음해 뭉개짐 → 가타카나 변환 + 지문 제거.
     jmap = {e.source: strip_stage_directions(fix_leaked_korean(e.target, config)) for e in entries}
-    events = [{"start": s["start"], "end": s["end"], "text": jmap.get(s["text"], "")} for s in segs]
+    events = [{"idx": i, "start": s["start"], "end": s["end"], "text": jmap.get(s["text"], "")}
+              for i, s in enumerate(segs)]              # idx = 오버라이드·pairs 좌표(필터 전)
 
     base = ensure_dir(resolve_path(f"{config['paths']['outputs_dir']}/{video_id}"))
-    # 반려-수정 재렌더(8/14): 검수함에서 고친 대사(overrides.json)를 합성 전에 병합.
-    # 좌표(idx)는 아래 ko_ja_pairs 의 idx 와 같은 '빈 대사 필터 전 세그 순번' — 그래서
-    # 필터보다 먼저 적용한다(지문 제거로 비었던 줄을 운영자가 채우는 것도 허용).
+    # 반려-수정 재렌더(8/14): 검수함에서 고친 대사·스타일·타이밍(overrides.json)을 합성
+    # **전**에 병합 — 타이밍이 SRT 1차 기록보다 앞서야 페이싱 캡(segment_hard_caps)에
+    # 먹힌다. 좌표(idx)는 아래 ko_ja_pairs 의 idx 와 같은 '빈 대사 필터 전 세그 순번' —
+    # 그래서 필터보다 먼저 적용한다(지문 제거로 비었던 줄을 운영자가 채우는 것도 허용).
     ov_path = base / "overrides.json"
     if ov_path.exists():
         try:
@@ -1036,10 +1099,12 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
             log.warning("overrides.json 병합 실패(무시하고 원문 진행): %s", e)
     # 한글 대역(관제 검수 카드용, 8/14): 더빙 대사 KO⇄JA 쌍. idx 는 검수함 '수정 재렌더'
     # 오버라이드의 좌표로도 쓰인다. B 루트는 translations.json 이 있지만 C 루트는 여기가 유일.
-    write_json({"subs": [{"idx": i, "start": e["start"], "ko": s["text"], "ja": e["text"]}
-                         for i, (s, e) in enumerate(zip(segs, events))]},
-               base / "ko_ja_pairs.json")
+    # (8/20 확장) end·end_actual·style 동봉 — retime 후 실측 end 로 갱신된다(아래).
+    write_json(build_dub_pairs(segs, events), base / "ko_ja_pairs.json")
     events = [e for e in events if e["text"].strip()]   # 지문만이던 세그(요음!→（もぐもぐ）) 제거
+    # 사용자 타이밍 이동으로 순서가 바뀔 수 있다 — SRT·페이싱 캡·retime(durs) 정렬은
+    # 전부 '시작 시각 오름차순' 전제라 여기서 한 번 확정한다.
+    events.sort(key=lambda e: e["start"])
 
     # self-ref: 이 영상의 원본 목소리를 레퍼런스로(음색 은행보다 정확).
     # 실패 시 → 은행에서 이 영상 목소리에 '음향적으로 가장 가까운' 레퍼런스 자동 선택(refbank).
@@ -1105,11 +1170,18 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     res = dub(video_id, str(ja_srt), level, config, speaker_wav=speaker_wav)
 
     # 자연 페이싱으로 발화 길이가 슬롯과 달라짐 → 자막 끝시각을 실제 더빙 길이에 재정렬.
+    # (사용자 지정 end 는 retime_events 가 보존한다 — 규칙 8/20)
     durs = res.get("actual_durs") or []
     if durs:
         events = retime_events(events, durs)
         ja_srt.write_text(render_mod.build_srt(events, int(config.get("render", {}).get("line_max_chars", 26))),
                           encoding="utf-8")
+        # 검수 노출: retime 후 실표시 end 를 ko_ja_pairs 에 반영(end_actual=True 로 구분)
+        pairs_path = base / "ko_ja_pairs.json"
+        try:
+            write_json(update_pairs_actual_ends(read_json(pairs_path), events), pairs_path)
+        except Exception as e:  # noqa: BLE001 — 대역은 검수 편의지 렌더 정본이 아니다
+            log.warning("ko_ja_pairs 실측 end 갱신 실패(무시): %s", e)
 
     if mux:
         dconf = config.get("dub", {})
