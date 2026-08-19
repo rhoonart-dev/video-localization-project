@@ -109,3 +109,28 @@ def test_apply_subtitle_overrides_patches_targets():
         doc = json.loads((work / "translations.json").read_text())
         assert doc["entries"][1]["target"] == "修正二"
         assert doc["entries"][0]["target"] == "一"
+
+
+def test_apply_subtitle_overrides_stores_style_and_timing():
+    """(8/20) style·start/end 는 entries 에 저장 — render.attach_entry_overrides 가
+    이벤트로 전사한다. 검증 위반은 즉시 실패(조용한 무시 금지)."""
+    import json
+
+    import pytest
+    from src.process_video import _apply_subtitle_overrides
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        (work / "translations.json").write_text(json.dumps(
+            {"entries": [{"source": "하나", "target": "一"}]}, ensure_ascii=False))
+        (work / "overrides.json").write_text(json.dumps(
+            {"subs": {"0": {"style": {"size": 48, "y": 0.9}, "end_sec": 7.5}}},
+            ensure_ascii=False))
+        assert _apply_subtitle_overrides(work) == 1
+        doc = json.loads((work / "translations.json").read_text())
+        assert doc["entries"][0]["style"] == {"size": 48.0, "y": 0.9}
+        assert doc["entries"][0]["end_sec"] == 7.5
+        assert doc["entries"][0]["target"] == "一"     # ja 없이도 style 만 고칠 수 있다
+        (work / "overrides.json").write_text(json.dumps(
+            {"subs": {"0": {"style": {"weight": "bold"}}}}, ensure_ascii=False))
+        with pytest.raises(ValueError):
+            _apply_subtitle_overrides(work)

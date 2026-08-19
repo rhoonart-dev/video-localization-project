@@ -450,3 +450,60 @@ def test_strip_non_lexical_drops_babble_keeps_words():
     # 짧지만 성립하는 한마디는 남는다
     assert strip_non_lexical("맛있어요") == "맛있어요"
     assert strip_non_lexical("아아아아 잘 먹겠습니다") == "잘 먹겠습니다"
+
+
+# ── 줄 스타일·타이밍 오버라이드(8/20 — docs/subtitle-style-overrides.md) ──
+
+def test_apply_dub_overrides_style_and_timing():
+    from src.dub import apply_dub_overrides
+    events = [{"idx": 0, "start": 1.0, "end": 2.0, "text": "一"},
+              {"idx": 1, "start": 3.0, "end": 4.0, "text": "二"}]
+    out, n = apply_dub_overrides(events, {"subs": {
+        "0": {"style": {"size": 64, "color": "#ffdd00"}, "end_sec": 2.8},
+        "1": {"ja": "修正二", "start_sec": 3.2}}})
+    assert n == 2
+    assert out[0]["style"] == {"size": 64.0, "color": "#FFDD00"}
+    assert out[0]["end"] == 2.8 and out[0]["end_fixed"] is True   # retime 이 안 덮는다
+    assert out[1]["start"] == 3.2 and "end_fixed" not in out[1]   # end 미지정 = retime 대상
+    assert events[0]["end"] == 2.0                                # 원본 불변(순수)
+
+
+def test_apply_dub_overrides_rejects_bad_style():
+    import pytest
+    from src.dub import apply_dub_overrides
+    events = [{"idx": 0, "start": 1.0, "end": 2.0, "text": "一"}]
+    with pytest.raises(ValueError):                               # 모르는 style 키 거절
+        apply_dub_overrides(events, {"subs": {"0": {"style": {"fontsize": 12}}}})
+    with pytest.raises(ValueError):                               # end ≤ start
+        apply_dub_overrides(events, {"subs": {"0": {"start_sec": 5, "end_sec": 4}}})
+
+
+def test_retime_events_preserves_user_fixed_end():
+    from src.dub import retime_events
+    events = [{"start": 0.0, "end": 2.0, "text": "a", "end_fixed": True},
+              {"start": 3.0, "end": 4.0, "text": "b"},
+              {"start": 6.0, "end": 7.0, "text": "c"}]
+    out = retime_events(events, [5.0, 1.5, 2.0])
+    assert out[0]["end"] == 2.0                        # 사용자 값 우선 — 실측 5s 를 무시
+    assert out[1]["end"] == 4.5                        # 일반 세그는 실측 재정렬(3.0+1.5)
+    assert out[2]["end"] == 8.0                        # 마지막 세그 자유 연장
+
+
+def test_build_dub_pairs_and_actual_end_update():
+    from src.dub import build_dub_pairs, update_pairs_actual_ends
+    segs = [{"start": 1.0, "end": 2.0, "text": "하나"},
+            {"start": 3.0, "end": 4.0, "text": "（지문）"}]
+    events = [{"idx": 0, "start": 1.0, "end": 2.8, "end_fixed": True, "text": "一",
+               "style": {"color": "#FF0000"}},
+              {"idx": 1, "start": 3.0, "end": 4.0, "text": ""}]
+    pairs = build_dub_pairs(segs, events)
+    assert pairs["subs"][0] == {"idx": 0, "start": 1.0, "end": 2.8, "end_actual": False,
+                                "ko": "하나", "ja": "一",
+                                "style": {"color": "#FF0000"}, "end_fixed": True}
+    assert pairs["subs"][1]["end_actual"] is False and "style" not in pairs["subs"][1]
+    # retime 후: 살아남은 이벤트(idx 0)만 실측 end 로 갱신 — 필터된 idx 1 은 계획값 유지
+    updated = update_pairs_actual_ends(pairs, [{"idx": 0, "start": 1.0, "end": 2.8,
+                                                "end_fixed": True, "text": "一"}])
+    assert updated["subs"][0]["end_actual"] is True
+    assert updated["subs"][1]["end_actual"] is False
+    assert pairs["subs"][0]["end_actual"] is False     # 원본 불변(순수)

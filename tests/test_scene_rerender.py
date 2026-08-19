@@ -89,3 +89,33 @@ def test_ass_escape_and_timestamp():
     assert lr._ass_escape("a\nb") == "a\\Nb"
     assert lr._ass_escape("{x}") == "(x)"          # ASS 오버라이드 블록 무력화
     assert lr._fmt_ts(3661.5) == "1:01:01.50"
+
+
+def test_build_telop_ass_line_style_and_timing_override(tmp_path):
+    """(8/20) 줄 오버라이드: \\fs·\\1c(BGR)·\\frz(부호 반전)·y→MarginV, 타이밍 우선.
+
+    태그는 _ass_escape 밖에서 조립돼야 한다(이스케이프가 { } 를 바꾼다)."""
+    refined = [{"orig_index": 0, "start_sec": 1.0, "end_sec": 2.0, "text_ko": "가"}]
+    tr = {"telops": [{"index": 0, "use": True, "ja": "テロップ{注}",
+                      "style": {"size": 64, "color": "#FFDD00", "rotate": -8, "y": 0.5},
+                      "start_sec": 3.5, "end_sec": 6.0}]}
+    out = tmp_path / "telops.ass"
+    assert lr.build_telop_ass(refined, tr, "ArialUnicode", out) == 1
+    body = out.read_text(encoding="utf-8")
+    line = next(ln for ln in body.splitlines() if ln.startswith("Dialogue:"))
+    assert "0:00:03.50,0:00:06.00" in line              # 사용자 타이밍이 L2b 값을 이긴다
+    assert "\\fs64" in line and "\\1c&H00DDFF&" in line  # #FFDD00 → BGR 00DDFF
+    assert "\\frz8" in line                              # 계약 -8(시계) → ASS +8(반시계)
+    assert ",0,0,960,," in line                          # y=0.5 → MarginV (1-0.5)*1920
+    assert "テロップ(注)" in line                        # 본문 { } 는 이스케이프, 태그는 생존
+    assert line.index("\\fs64") < line.index("テロップ")
+
+
+def test_build_telop_ass_no_style_keeps_legacy_line(tmp_path):
+    refined = [{"orig_index": 0, "start_sec": 1.0, "end_sec": 2.0, "text_ko": "가"}]
+    tr = {"telops": [{"index": 0, "use": True, "ja": "そのまま"}]}
+    out = tmp_path / "t.ass"
+    lr.build_telop_ass(refined, tr, "ArialUnicode", out)
+    line = next(ln for ln in out.read_text(encoding="utf-8").splitlines()
+                if ln.startswith("Dialogue:"))
+    assert ",0,0,0,, そのまま" in line                   # 이벤트 MarginV 0 = 스타일 기본(720)
