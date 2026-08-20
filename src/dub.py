@@ -144,11 +144,13 @@ def apply_dub_overrides(events: list[dict[str, Any]],
 
     idx 는 ko_ja_pairs.json subs 의 idx(= ASR 세그 순번, 빈 대사 필터 **전**) — 검수함
     카드가 보여준 좌표 그대로 돌아온다. 값이 dict 면 {"ja", "style", "start_sec",
-    "end_sec"}(계약: docs/subtitle-style-overrides.md — 타입·범위 위반, 모르는 style
-    키는 ValueError). start/end 는 영상 시간축 초 — SRT 1차 기록 전에 병합돼야
+    "end_sec", "use"}(계약: docs/subtitle-style-overrides.md — 타입·범위 위반, 모르는
+    style 키는 ValueError). start/end 는 영상 시간축 초 — SRT 1차 기록 전에 병합돼야
     페이싱 캡(segment_hard_caps)이 사용자 타이밍 기준으로 잡힌다. end 지정 세그는
-    end_fixed 표시 → retime_events 가 덮지 않는다. 없는 idx·빈 ja 는 무시(운영자가
-    안 고친 줄). 사본 반환. 순수 — 테스트 대상."""
+    end_fixed 표시 → retime_events 가 덮지 않는다. use=false(소프트 삭제, E6-0)는
+    이벤트에 표시만 하고 제외는 호출부(빈 대사 필터와 같은 지점)가 한다 — SRT 가
+    합성 드라이버라 그 한 곳에서 합성·자막·retime 이 함께 빠진다. 없는 idx·빈 ja 는
+    무시(운영자가 안 고친 줄). 사본 반환. 순수 — 테스트 대상."""
     from engine.render import validate_line_style, validate_line_timing
     subs = (ov or {}).get("subs") or {}
     out = [dict(e) for e in events]
@@ -177,6 +179,11 @@ def apply_dub_overrides(events: list[dict[str, Any]],
                 out[i]["end"] = end
                 out[i]["end_fixed"] = True          # 사용자 값 우선 — retime 이 안 덮는다
                 changed = True
+            if "use" in v:                          # 소프트 삭제(E6-0)
+                if not isinstance(v["use"], bool):
+                    raise ValueError(f"subs[{key}].use 는 불리언(false=그 줄 제외): {v['use']!r}")
+                out[i]["use"] = v["use"]
+                changed = True
         n += 1 if changed else 0
     return out, n
 
@@ -188,9 +195,13 @@ def build_dub_pairs(segs: list[dict[str, Any]],
     subs[]: {idx(ASR 세그 순번=오버라이드 좌표), start, end(초, 영상 시간축),
              end_actual(False=계획값 — retime 전), ko, ja,
              style(오버라이드 있을 때만), end_fixed(사용자 지정 end 일 때만)}.
-    오버라이드 병합 **후** 에 만들므로 start/end/style 은 현재 적용값이다. 순수."""
+    오버라이드 병합 **후** 에 만들므로 start/end/style 은 현재 적용값이다.
+    use=false(소프트 삭제)로 뺀 줄은 다음 카드에 실리지 않는다 — 편집실 재진입 때
+    살아 돌아와 보이면 안 된다(E6-0). idx 는 필터 전 순번이라 좌표는 유지된다. 순수."""
     rows = []
     for s, e in zip(segs, events):
+        if e.get("use") is False:
+            continue
         row: dict[str, Any] = {"idx": e["idx"], "start": e["start"], "end": e["end"],
                                "end_actual": False, "ko": s["text"], "ja": e["text"]}
         if e.get("style"):
@@ -1101,7 +1112,14 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     # 오버라이드의 좌표로도 쓰인다. B 루트는 translations.json 이 있지만 C 루트는 여기가 유일.
     # (8/20 확장) end·end_actual·style 동봉 — retime 후 실측 end 로 갱신된다(아래).
     write_json(build_dub_pairs(segs, events), base / "ko_ja_pairs.json")
-    events = [e for e in events if e["text"].strip()]   # 지문만이던 세그(요음!→（もぐもぐ）) 제거
+    # 지문만이던 세그(요음!→（もぐもぐ）)와 use=false(소프트 삭제, E6-0) 제거 —
+    # 이 아래 SRT 가 합성 드라이버라, 여기 한 곳에서 TTS 합성·자막(srt/ass 번인)·
+    # retime(durs 정렬)이 함께 빠진다. 시작 시각은 아무도 안 옮기므로 뺀 줄의 창은
+    # 무음으로 남고 뒤 이벤트가 당겨오지 않는다(발주 규칙).
+    n_del = sum(1 for e in events if e.get("use") is False)
+    if n_del:
+        log.info("소프트 삭제: 자막·대사 %d줄 제외(use=false — 합성·자막·pairs 공통)", n_del)
+    events = [e for e in events if e.get("use") is not False and e["text"].strip()]
     # 사용자 타이밍 이동으로 순서가 바뀔 수 있다 — SRT·페이싱 캡·retime(durs) 정렬은
     # 전부 '시작 시각 오름차순' 전제라 여기서 한 번 확정한다.
     events.sort(key=lambda e: e["start"])

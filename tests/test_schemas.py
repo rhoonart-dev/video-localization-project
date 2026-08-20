@@ -46,3 +46,15 @@ def test_translationdoc_as_map():
                                 TranslationEntry("불닭", "ブルダック")])
     assert t.as_map() == {"안녕": "こんにちは", "불닭": "ブルダック"}
     assert t.draft is True
+
+
+def test_translation_entry_use_roundtrip_and_asmap_excludes():
+    """자막 소프트 삭제(E6-0): use=false 는 tmap 에서 빠져 번인·ass/srt·ja_events 가
+    함께 빠진다. 재기록(to_dict)에도 살아남아야 재렌더가 멱등이다."""
+    doc = TranslationDoc.from_dict({
+        "video_id": "v",
+        "entries": [{"source": "하나", "target": "一", "use": False},
+                    {"source": "둘", "target": "二"}]})
+    assert doc.entries[0].use is False and doc.entries[1].use is True
+    assert doc.as_map() == {"둘": "二"}
+    assert doc.to_dict()["entries"][0]["use"] is False

@@ -9,7 +9,7 @@
 
 ## 오버라이드 값 스키마 (두 경로 공통)
 
-subs / telops 의 dict 값에 선택 키 3개가 추가된다(종전 `"ja"` 문자열/dict 규약 그대로):
+subs / telops 의 dict 값에 선택 키가 추가된다(종전 `"ja"` 문자열/dict 규약 그대로):
 
 ```json
 { "ja": "…", "style": { "size": 64, "y": 0.8, "color": "#FFDD00", "rotate": -8 },
@@ -23,12 +23,20 @@ subs / telops 의 dict 값에 선택 키 3개가 추가된다(종전 `"ja"` 문�
 | `style.color` | 글자색 | `"#RRGGBB"` → ASS `\1c&HBBGGRR&` | ValueError |
 | `style.rotate` | 줄 회전 | -180~180 도, **시계방향 양수**(v3 images 와 동일 규약). ASS `\frz` 는 반시계 양수 — **부호 반전은 엔진(style_ass_tags) 책임**, 편집실은 계약 부호만 보낸다. 0 은 태그를 안 박는다 | ValueError |
 | `start_sec` / `end_sec` | 표시 구간 | 초, **편집본(영상) 시간축**, ≥0, 둘 다 있으면 end > start | ValueError |
+| `use` (E6-0) | **소프트 삭제** — `false` = 그 줄을 렌더에서 뺀다(번인·사이드카 ass/srt·다음 카드 pairs 전부). 삭제가 같은 항목의 다른 diff 를 이긴다(편집실이 `{use:false}` 만 보낸다) | 불리언. 텔롭은 0038 원계약 그대로 | ValueError(불리언 외) |
 
 - **모르는 style 키는 즉시 거절**(조용한 무시 = 사람이 고친 값 증발 — v3 과 동일 원칙).
 - 명시한 키만 얹는다 — `{"style": {"color": "#FF0000"}}` 이면 크기·위치는 기존 그대로.
-- **tts 항목의 style·start_sec/end_sec 는 이번 판 범위 밖 — 즉시 거절한다(후속)**.
+- **tts 항목의 style·start_sec/end_sec·use 는 이번 판 범위 밖 — 즉시 거절한다(후속)**.
   근거: ai-video 계약이 TTS cue 단위 스타일을 받지 않고(디자인 레벨은 KR 와 공유),
-  tts 타이밍 편집은 재합성 창(fit) 재계산이 얽힌다. 조용한 무시 대신 fail-loud.
+  tts 타이밍·삭제 편집은 재합성 창(fit) 재계산이 얽힌다. 조용한 무시 대신 fail-loud.
+- **subs use=false 의 경로별 의미(E6-0)**: SHOTCONE 은 l3_apply 가 segments 전사에서
+  그 줄을 뺀다(ai-video 렌더 제외). 잔망루피 C/BC 는 빈 대사 필터와 같은 지점에서
+  이벤트를 빼 **TTS 합성·자막(srt/ass)·retime 이 함께 빠지고**, 시작 시각은 아무도
+  옮기지 않으므로 그 창은 무음으로 남는다(뒤 이벤트가 당겨오지 않는다). BJ/B 는
+  `TranslationDoc.as_map` 이 tmap 에서 빼 번인(replace)·ass/srt·ja_events 에서 빠진다.
+  다음 카드 pairs(build_ko_ja_pairs·build_dub_pairs)에서도 빠진다 — 좌표(idx)는 필터
+  전 순번이라 남은 줄의 idx 는 그대로다.
 
 ## 경로별 소비
 

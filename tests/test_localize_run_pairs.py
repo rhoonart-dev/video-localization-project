@@ -134,3 +134,57 @@ def test_pairs_reflect_style_timing_and_clamp_priority():
         assert pairs["subs"][0]["end"] == 4.0                      # 클램프(l3_apply 와 동일)
         assert pairs["subs"][1]["start"] == 31.0 and pairs["subs"][1]["end"] == 48.0
         assert pairs["subs"][1]["style"] == {"color": "#FF0000"}
+
+
+# ── 자막 소프트 삭제(E6-0 — subs use:false) ──────────────────────────────
+
+def test_apply_overrides_sub_use_false_and_type_guards():
+    import pytest
+    tr = {"segments": [{"index": 0, "ja": "一"}, {"index": 1, "ja": "二"}],
+          "tts_cues": [{"index": 0, "ja": "ナレ"}]}
+    out = apply_overrides(tr, {"subs": {"0": {"use": False}}})
+    assert out["segments"][0]["use"] is False and "use" not in out["segments"][1]
+    assert "use" not in tr["segments"][0]                # 원본 불변(순수)
+    with pytest.raises(ValueError):                      # 불리언 외 거절(조용한 무시 금지)
+        apply_overrides(tr, {"subs": {"0": {"use": "false"}}})
+    with pytest.raises(ValueError):                      # tts 삭제는 후속 범위 — fail-loud
+        apply_overrides(tr, {"tts": {"0": {"use": False}}})
+
+
+def test_pairs_skip_deleted_subs_keep_idx():
+    with tempfile.TemporaryDirectory() as tmp:
+        backup = pathlib.Path(tmp) / "bk"; backup.mkdir()
+        out = pathlib.Path(tmp) / "out"; out.mkdir()
+        (backup / "subtitle_segments.json").write_text(json.dumps(
+            [{"start_sec": 1.0, "end_sec": 2.0, "text": "하나"},
+             {"start_sec": 3.0, "end_sec": 4.0, "text": "둘"}], ensure_ascii=False))
+        tr = {"segments": [{"index": 0, "ja": "一", "use": False},
+                           {"index": 1, "ja": "二"}]}
+        pairs = build_ko_ja_pairs(backup, out, tr)
+        # 뺀 줄은 다음 카드에서 빠지고, 남은 줄은 필터 전 좌표(idx)를 유지한다
+        assert [r["idx"] for r in pairs["subs"]] == [1]
+        assert pairs["subs"][0]["ja"] == "二"
+
+
+def test_l3_apply_drops_deleted_segments():
+    from scripts.localize_run import l3_apply
+    with tempfile.TemporaryDirectory() as tmp:
+        job = pathlib.Path(tmp) / "job"; job.mkdir()
+        backup = job / "bk"; backup.mkdir()
+        out = job / "out"; out.mkdir()
+        (backup / "subtitle_segments.json").write_text(json.dumps(
+            [{"start_sec": 1.0, "end_sec": 2.0, "text": "하나"},
+             {"start_sec": 3.0, "end_sec": 4.0, "text": "둘"},
+             {"start_sec": 5.0, "end_sec": 6.0, "text": "셋"}], ensure_ascii=False))
+        (backup / "checkpoint_story.json").write_text(json.dumps({"title_text": "T"}))
+        (backup / "edit_plan.json").write_text(json.dumps({"layout": {"top_title": "T"}}))
+        (backup / "checkpoint_resources.json").write_text(json.dumps({"tts_cue_files": []}))
+        tr = {"top_title_ja": "上", "segments": [
+                  {"index": 0, "ja": "一", "use": False},
+                  {"index": 1, "ja": "二"},
+                  {"index": 2, "ja": "三"}],
+              "tts_cues": [], "telops": []}
+        l3_apply(job, backup, tr, [], {"display": "X"}, {"telop_font": "Arial"}, out)
+        written = json.loads((job / "subtitle_segments.json").read_text())
+        # use=false 줄은 전사에서 빠진다(ai-video 렌더 제외) — 나머지는 번역 반영
+        assert [s["text"] for s in written] == ["二", "三"]

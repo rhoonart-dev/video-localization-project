@@ -134,3 +134,26 @@ def test_apply_subtitle_overrides_stores_style_and_timing():
             {"subs": {"0": {"style": {"weight": "bold"}}}}, ensure_ascii=False))
         with pytest.raises(ValueError):
             _apply_subtitle_overrides(work)
+
+
+def test_apply_subtitle_overrides_stores_use_false():
+    """자막 소프트 삭제(E6-0): use=false 를 entries 에 저장 — as_map(tmap)이 그 줄을
+    빼 번인·ass/srt 에서 빠진다. 불리언 외에는 즉시 실패(조용한 무시 금지)."""
+    import json
+
+    import pytest
+    from src.process_video import _apply_subtitle_overrides
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        (work / "translations.json").write_text(json.dumps(
+            {"entries": [{"source": "하나", "target": "一"},
+                         {"source": "둘", "target": "二"}]}, ensure_ascii=False))
+        (work / "overrides.json").write_text(json.dumps(
+            {"subs": {"0": {"use": False}}}, ensure_ascii=False))
+        assert _apply_subtitle_overrides(work) == 1
+        doc = json.loads((work / "translations.json").read_text())
+        assert doc["entries"][0]["use"] is False and "use" not in doc["entries"][1]
+        (work / "overrides.json").write_text(json.dumps(
+            {"subs": {"0": {"use": "false"}}}, ensure_ascii=False))
+        with pytest.raises(ValueError):
+            _apply_subtitle_overrides(work)
