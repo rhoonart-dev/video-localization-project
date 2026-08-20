@@ -507,3 +507,25 @@ def test_build_dub_pairs_and_actual_end_update():
     assert updated["subs"][0]["end_actual"] is True
     assert updated["subs"][1]["end_actual"] is False
     assert pairs["subs"][0]["end_actual"] is False     # 원본 불변(순수)
+
+
+# ── 자막·대사 소프트 삭제(E6-0 — subs use:false) ─────────────────────────
+
+def test_apply_dub_overrides_use_false_and_pairs_skip():
+    import pytest
+    from src.dub import apply_dub_overrides, build_dub_pairs
+    events = [{"idx": 0, "start": 1.0, "end": 2.0, "text": "一"},
+              {"idx": 1, "start": 3.0, "end": 4.0, "text": "二"}]
+    out, n = apply_dub_overrides(events, {"subs": {"0": {"use": False}}})
+    assert n == 1 and out[0]["use"] is False and "use" not in out[1]
+    assert "use" not in events[0]                        # 원본 불변(순수)
+    with pytest.raises(ValueError):                      # 불리언 외 거절(조용한 무시 금지)
+        apply_dub_overrides(events, {"subs": {"0": {"use": 0}}})
+    # 다음 카드 pairs 에서 빠진다 — 남은 줄의 idx(필터 전 순번)는 유지
+    segs = [{"start": 1.0, "end": 2.0, "text": "하나"},
+            {"start": 3.0, "end": 4.0, "text": "둘"}]
+    pairs = build_dub_pairs(segs, out)
+    assert [r["idx"] for r in pairs["subs"]] == [1]
+    # 호출부 필터(빈 대사와 같은 지점) 판정 — SRT(합성 드라이버)·번인·retime 이 함께 뺀다
+    kept = [e for e in out if e.get("use") is not False and e["text"].strip()]
+    assert [e["idx"] for e in kept] == [1]

@@ -484,7 +484,11 @@ def l3_apply(job: Path, backup: Path, translation: dict, telop_data: list,
              wcfg: dict, locale_cfg: dict, out_dir: Path):
     # 대사 자막 — 항상 KO 백업 기준으로 교체(멱등)
     segments = json.loads((backup / "subtitle_segments.json").read_text(encoding="utf-8"))
-    for seg, tr in zip(segments, translation["segments"]):
+    dropped = set()          # 소프트 삭제(E6-0) — 전사에서 빼면 ai-video 렌더에서 빠진다
+    for si, (seg, tr) in enumerate(zip(segments, translation["segments"])):
+        if tr.get("use") is False:
+            dropped.add(si)
+            continue
         seg["text"] = tr["ja"]
         # 줄 스타일·타이밍(8/20 검수 수정): subtitle_segments.json 에 전사 —
         # ai-video(v3 캐시 규약) 렌더가 이 파일의 style 을 그대로 소비한다.
@@ -500,6 +504,9 @@ def l3_apply(job: Path, backup: Path, translation: dict, telop_data: list,
         span = float(seg["end_sec"]) - float(seg["start_sec"])
         if not user_timing and span > 8.0 and len(tr["ja"]) <= 20:
             seg["end_sec"] = float(seg["start_sec"]) + 4.0
+    if dropped:              # 인덱스로 걸러낸다 — 번역보다 긴 꼬리 세그(있다면)는 종전대로 남긴다
+        segments = [s for si, s in enumerate(segments) if si not in dropped]
+        print(f"[L3] 소프트 삭제: 대사 {len(dropped)}줄 제외(use=false)")
     (job / "subtitle_segments.json").write_text(
         json.dumps(segments, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -727,6 +734,8 @@ def build_ko_ja_pairs(backup: Path, out_dir: Path, translation: dict,
     try:
         segs = json.loads((backup / "subtitle_segments.json").read_text(encoding="utf-8"))
         for i, (seg, tr) in enumerate(list(zip(segs, translation.get("segments") or []))[:max_items]):
+            if tr.get("use") is False:            # 소프트 삭제(E6-0) — 다음 카드에서 뺀다
+                continue                          # (idx 는 필터 전 순번이라 좌표 유지)
             user_timing = tr.get("start_sec") is not None or tr.get("end_sec") is not None
             start = float(tr["start_sec"]) if tr.get("start_sec") is not None \
                 else float(seg.get("start_sec", 0.0))
@@ -783,9 +792,11 @@ def apply_overrides(translation: dict, ov: dict) -> dict:
       update(예: {"ja":"…","use":false}), 문자열이면 ja 만 교체. 없는 idx 는 무시.
     · (8/20) subs·telops 의 dict 값은 style{size,y,color,rotate}·start_sec·end_sec 를
       실을 수 있다(계약: docs/subtitle-style-overrides.md) — 타입·범위 위반, 모르는
-      style 키는 ValueError(fail-loud). **tts 의 style·start_sec/end_sec 는 후속 범위**
-      (ai-video 계약이 cue 단위 스타일을 안 받고, 타이밍은 재합성 창 재계산이 얽힌다)
-      — 조용히 무시하지 않고 즉시 거절한다.
+      style 키는 ValueError(fail-loud). **tts 의 style·start_sec/end_sec·use 는 후속
+      범위**(ai-video 계약이 cue 단위 스타일을 안 받고, 타이밍·삭제는 재합성 창
+      재계산이 얽힌다) — 조용히 무시하지 않고 즉시 거절한다.
+    · (E6-0) subs 의 use=false = 소프트 삭제 — l3_apply 가 segments 전사에서 그 줄을
+      빼고(렌더 제외), build_ko_ja_pairs 가 다음 카드에서 뺀다. 불리언 외에는 거절.
     원본은 건드리지 않고 사본을 돌려준다. 순수 — 테스트 대상."""
     import copy
     out = copy.deepcopy(translation)
@@ -808,10 +819,13 @@ def apply_overrides(translation: dict, ov: dict) -> dict:
                 continue
             if isinstance(v, dict):
                 v = dict(v)
-                if dst == "tts_cues" and ({"style", "start_sec", "end_sec"} & set(v)):
+                if dst == "tts_cues" and ({"style", "start_sec", "end_sec", "use"} & set(v)):
                     raise ValueError(
-                        f"tts[{key}]: style/start_sec/end_sec 오버라이드는 아직 지원하지 "
+                        f"tts[{key}]: style/start_sec/end_sec/use 오버라이드는 아직 지원하지 "
                         "않습니다(후속 — docs/subtitle-style-overrides.md)")
+                if "use" in v and not isinstance(v["use"], bool):
+                    raise ValueError(
+                        f"{src}[{key}].use 는 불리언(false=그 줄 제외): {v['use']!r}")
                 if v.get("style") is not None:
                     v["style"] = validate_line_style(v["style"])   # 위반 = 즉시 실패
                 validate_line_timing(v)

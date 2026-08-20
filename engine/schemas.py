@@ -132,6 +132,8 @@ class TranslationEntry:
     style: Optional[dict[str, Any]] = None       # {size, y, color, rotate}
     start_sec: Optional[float] = None            # 편집본 시간축 초
     end_sec: Optional[float] = None
+    # 소프트 삭제(E6-0): False = 이 줄을 렌더(번인·ass/srt)에서 뺀다 — 검수함 자막 ✕.
+    use: bool = True
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "TranslationEntry":
@@ -143,6 +145,7 @@ class TranslationEntry:
             style=d.get("style") or None,
             start_sec=d.get("start_sec"),
             end_sec=d.get("end_sec"),
+            use=d.get("use") is not False,       # 명시적 false 만 삭제(없음/None = 사용)
         )
 
 
@@ -155,7 +158,9 @@ class TranslationDoc:
     entries: list[TranslationEntry] = field(default_factory=list)
 
     def as_map(self) -> dict[str, str]:
-        return {e.source: e.target for e in self.entries}
+        # use=False(소프트 삭제, E6-0)는 tmap 에서 빠진다 — detections_to_events 가
+        # tmap 에 없는 원문을 건너뛰므로 번인(replace)·ass/srt·ja_events 전부 그 줄이 빠진다.
+        return {e.source: e.target for e in self.entries if e.use}
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
