@@ -372,22 +372,28 @@ def attach_entry_overrides(events: list[dict[str, Any]],
     return out
 
 
-def events_json_doc(video_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+def events_json_doc(video_id: str, events: list[dict[str, Any]],
+                    cuts: Optional[list[dict[str, float]]] = None) -> dict[str, Any]:
     """ja_events.json 스키마 — 검수(review_meta/ves 어댑터)가 읽는 이벤트 실좌표 노출.
 
     B/BJ 루트의 자막 타이밍은 detections(0.5s 양자화) 기반이라 translations.json 만으론
     화면 표시 구간을 알 수 없다 → render 가 최종 이벤트를 그대로 떨군다. 순수.
     events[]: {entry_idx(translations entries 순번=오버라이드 좌표, 미매칭 null),
                start, end(초, 편집본 시간축), text(ja), position, bbox([x1,y1,x2,y2]|null),
-               style(현재 줄 스타일, 없으면 null), end_fixed(사용자 지정 타이밍 여부)}"""
-    return {"video_id": video_id, "coord": "translations.json entries 순번(entry_idx)",
-            "events": [{"entry_idx": ev.get("entry_idx"),
-                        "start": ev["start"], "end": ev["end"], "text": ev["text"],
-                        "position": ev.get("position"),
-                        "bbox": list(ev["bbox"]) if ev.get("bbox") else None,
-                        "style": ev.get("style") or None,
-                        "end_fixed": bool(ev.get("end_fixed"))}
-                       for ev in events]}
+               style(현재 줄 스타일, 없으면 null), end_fixed(사용자 지정 타이밍 여부)}
+    (E9) cuts 가 적용된 렌더면 그 목록을 동봉 — start/end 는 이미 당겨진(컷 후)
+    시간축이고, 검수자가 '왜 짧아졌는지' 안다."""
+    doc = {"video_id": video_id, "coord": "translations.json entries 순번(entry_idx)",
+           "events": [{"entry_idx": ev.get("entry_idx"),
+                       "start": ev["start"], "end": ev["end"], "text": ev["text"],
+                       "position": ev.get("position"),
+                       "bbox": list(ev["bbox"]) if ev.get("bbox") else None,
+                       "style": ev.get("style") or None,
+                       "end_fixed": bool(ev.get("end_fixed"))}
+                      for ev in events]}
+    if cuts:
+        doc["cuts"] = list(cuts)
+    return doc
 
 
 # ── 모드 A: Pillow 합성 ──────────────────────────────────────────────────
@@ -510,7 +516,8 @@ def render_backcheck(rendered_dir: str, doc: DetectionDoc, tmap: dict[str, str],
 # ── 오케스트레이션 ───────────────────────────────────────────────────────
 def render(doc_path: str, translations_path: str, config: dict[str, Any],
            mode: Optional[str] = None, inpainted_dir: Optional[str] = None,
-           out_dir: Optional[str] = None) -> dict[str, str]:
+           out_dir: Optional[str] = None,
+           cuts: Optional[list[dict[str, float]]] = None) -> dict[str, str]:
     doc = DetectionDoc.load(doc_path)
     tdoc = TranslationDoc.load(translations_path)
     tmap = tdoc.as_map()
@@ -525,10 +532,19 @@ def render(doc_path: str, translations_path: str, config: dict[str, Any],
     events = detections_to_events(doc, tmap)
     # 줄 단위 스타일·타이밍 오버라이드(검수 반려 수정) — entries 에 실려 온 값을 이벤트로.
     events = attach_entry_overrides(events, tdoc.entries)
+    # 구간 잘라내기(E9) — 오버라이드 병합 **뒤**(사용자 타이밍도 당김 대상), ass/srt·
+    # ja_events 기록 **전**. 완전히 컷 안인 줄은 use:false 와 동일 의미로 제외되고,
+    # 걸친 줄은 경계 클램프. 영상 자체의 컷은 재조립(_reassemble)이 같은 cuts 로 한다.
+    if cuts:
+        from engine.cuts import apply_cuts_to_events
+        events, n_cut_del = apply_cuts_to_events(events, cuts)
+        events = [e for e in events if e.get("use") is not False]
+        log.info("구간 잘라내기(E9): 컷 %d개 — 완전 포함 %d줄 제외, 이후 시각 당김",
+                 len(cuts), n_cut_del)
     # 이벤트 실좌표 노출(검수용) — B/BJ 타이밍은 detections(0.5s 양자화) 기반이라
     # 여기서 떨궈야 review_meta(ves 어댑터)가 표시 구간·현재 스타일을 안다.
     events_path = base / "ja_events.json"
-    write_json(events_json_doc(doc.video_id, events), events_path)
+    write_json(events_json_doc(doc.video_id, events, cuts=cuts), events_path)
     ass_path = base / "ja.ass"
     srt_path = base / "ja.srt"
     ass_path.write_text(build_ass(events, doc.width, doc.height, line_max), encoding="utf-8")

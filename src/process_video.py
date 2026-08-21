@@ -90,6 +90,26 @@ def _apply_subtitle_overrides(work: Path) -> int:
     return n
 
 
+def _load_cuts(work: Path, duration: float) -> list[dict[str, Any]]:
+    """overrides.json 최상위 `cuts`(E9 구간 잘라내기) 읽기 + 검증.
+
+    좌표는 완성본 시간축 초(계약: docs/subtitle-style-overrides.md). B/BJ 루트 정책은
+    검증 위반 = 즉시 실패(_apply_subtitle_overrides 와 동일 — 조용한 무시 금지).
+    파일 없음/읽기 실패는 종전 그대로 0건 처리."""
+    import json as _json
+
+    from engine.cuts import validate_cuts
+    ov_path = work / "overrides.json"
+    if not ov_path.exists():
+        return []
+    try:
+        raw = (_json.loads(ov_path.read_text(encoding="utf-8")) or {}).get("cuts")
+    except (OSError, ValueError) as e:
+        log.warning("overrides 읽기 실패(cuts 없이 진행): %s", e)
+        return []
+    return validate_cuts(raw, duration=duration)     # 위반 = ValueError(즉시 실패)
+
+
 def process_video(video: str, video_id: str, level: str, config: dict[str, Any],
                   content_type: Optional[str] = None, roi: Optional[tuple] = None,
                   hero: bool = False, use_deepl: bool = False,
@@ -134,6 +154,7 @@ def process_video(video: str, video_id: str, level: str, config: dict[str, Any],
     render_mode = opts.get("render_mode", "subtitle")
     if render_mode == "clean":
         render_out = {}
+        cuts = []      # BC: 뒤따르는 더빙 단계(src/dub.py)가 cuts 를 담당 — 이중 컷 방지
         log.info("clean 모드: 텍스트 재렌더·번역 생략 — 캡션 제거 프레임 그대로(BC: 더빙이 뒤따름)")
     else:
         translate_mod.translate(str(work / "detections.json"), config,
@@ -141,13 +162,16 @@ def process_video(video: str, video_id: str, level: str, config: dict[str, Any],
         n_ov = _apply_subtitle_overrides(work)
         if n_ov:
             log.info("반려 수정 병합: 자막 %d건 교체(overrides.json → translations.json)", n_ov)
+        # 구간 잘라내기(E9): 이벤트 당김은 render 가, 영상 컷은 _reassemble 이 같은 값으로.
+        cuts = _load_cuts(work, float(meta.get("duration", 0.0)))
         render_out = render_mod.render(
             str(work / "detections.json"), str(work / "translations.json"), config,
-            mode=render_mode, inpainted_dir=str(inpainted_dir) if render_mode == "replace" else None)
+            mode=render_mode, inpainted_dir=str(inpainted_dir) if render_mode == "replace" else None,
+            cuts=cuts)
 
     # [6] 재조립: (무손실 FFV1 중간본 → 최종 인코딩) + 오디오 merge
     final = _reassemble(config, work, fps, render_mode, render_out, inpainted_dir,
-                        frames_dir, audio, video)
+                        frames_dir, audio, video, cuts=cuts)
 
     # [7] QA 리포트
     report = qa_mod.run_qa(
@@ -169,8 +193,13 @@ def process_video(video: str, video_id: str, level: str, config: dict[str, Any],
 
 
 def _reassemble(config, work: Path, fps: float, render_mode: str, render_out: dict,
-                inpainted_dir, frames_dir, audio, src_video) -> Path:
-    """프레임 → 무손실 중간본 → 최종 인코딩 + 오디오 merge."""
+                inpainted_dir, frames_dir, audio, src_video,
+                cuts: Optional[list] = None) -> Path:
+    """프레임 → 무손실 중간본 → 최종 인코딩 + 오디오 merge.
+
+    (E9) cuts 가 있으면 최종본에서 그 구간을 들어낸다 — render 가 이미 같은 값으로
+    자막 이벤트를 당겨 놓았으므로(ja.ass/srt·ja_bilingual.ass 가 컷 후 시간축),
+    bilingual 은 **컷본 위에** 굽는다(굽고 나서 자르면 번인 위치가 어긋난다)."""
     enc = config.get("encode", {})
     if render_mode in ("replace", "clean"):     # clean = 캡션 제거 프레임 그대로 조립
         src_frames = render_out.get("frames", str(inpainted_dir))
@@ -181,6 +210,11 @@ def _reassemble(config, work: Path, fps: float, render_mode: str, render_out: di
             src_frames, work / "video_noaudio.mp4", fps,
             codec=enc.get("final_codec", "libx264"),
             pix_fmt=enc.get("pixel_format", "yuv420p"), crf=int(enc.get("final_crf", 18)))
+        if cuts:   # 번인 프레임은 원본 프레임 좌표 그대로라, 조립 후 컷이 정확하다
+            muxed = common.mux_audio(encoded, audio, work / "final_uncut.mp4")
+            return common.cut_video(muxed, work / "final_draft.mp4", cuts,
+                                    crf=int(enc.get("final_crf", 18)),
+                                    pix_fmt=enc.get("pixel_format", "yuv420p"))
         return common.mux_audio(encoded, audio, work / "final_draft.mp4")
     if render_mode == "bilingual":
         # 번인(2026-08-12 수정): render 는 ja_bilingual.ass 를 만들기만 했고 아무도 굽지 않아,
@@ -188,14 +222,24 @@ def _reassemble(config, work: Path, fps: float, render_mode: str, render_out: di
         # 쇼츠는 사이드카 자막 트랙을 못 쓰므로 여기서 원본 위에 덧입힌다(한국어는 그대로 남는다).
         bi = render_out.get("bilingual_ass")
         if bi and Path(bi).exists():
+            burn_src = src_video
+            if cuts:   # 자막이 컷 후 시간축 — 반드시 먼저 자르고 그 위에 굽는다
+                burn_src = str(common.cut_video(src_video, work / "video_cut.mp4", cuts,
+                                                crf=int(enc.get("final_crf", 18)),
+                                                pix_fmt=enc.get("pixel_format", "yuv420p")))
             fonts = config.get("paths", {}).get("fonts_dir")
             return common.burn_subtitles(
-                src_video, bi, work / "final_draft.mp4",
+                burn_src, bi, work / "final_draft.mp4",
                 fonts_dir=resolve_path(fonts) if fonts else None,
                 crf=int(enc.get("final_crf", 18)),
                 pix_fmt=enc.get("pixel_format", "yuv420p"))
         log.warning("bilingual 인데 ja_bilingual.ass 가 없다 — 원본 그대로 내보낸다(자막 없음)")
     # 자막 모드: 원본 화질 유지 → 원본을 그대로 최종본으로(자막은 sidecar ja.ass/srt)
+    if cuts:
+        log.info("자막 모드 + cuts: 컷본을 최종본으로(사이드카 ja.ass/srt 는 컷 후 시간축).")
+        return common.cut_video(src_video, work / "final_draft.mp4", cuts,
+                                crf=int(enc.get("final_crf", 18)),
+                                pix_fmt=enc.get("pixel_format", "yuv420p"))
     log.info("자막 모드: 원본 영상 유지 + ja.ass/ja.srt 사이드카(업로더가 자막 추가/번인).")
     return common.mux_audio(src_video, None, work / "final_draft.mp4")
 

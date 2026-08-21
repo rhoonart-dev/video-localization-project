@@ -21,6 +21,7 @@ from typing import Any, Optional  # noqa: E402
 
 from engine import common  # noqa: E402
 from engine.common import ensure_dir, get_logger, get_secret, load_config, read_json, resolve_path, write_json  # noqa: E402
+from engine.cuts import apply_cuts_to_events, cut_total, shift_time, validate_cuts  # noqa: E402
 
 log = get_logger("dub")
 
@@ -1102,16 +1103,41 @@ def dub_from_video(video_id: str, video: str, level: str, config: dict[str, Any]
     # 먹힌다. 좌표(idx)는 아래 ko_ja_pairs 의 idx 와 같은 '빈 대사 필터 전 세그 순번' —
     # 그래서 필터보다 먼저 적용한다(지문 제거로 비었던 줄을 운영자가 채우는 것도 허용).
     ov_path = base / "overrides.json"
+    cuts: list[dict[str, float]] = []
     if ov_path.exists():
         try:
-            events, n_ov = apply_dub_overrides(events, read_json(ov_path))
+            ov = read_json(ov_path)
+            # cuts 검증을 병합보다 먼저 — 위반 시 이 재렌더의 오버라이드 **전체** 무시
+            # (E5 정책: 검증 위반이 부분 반영으로 새지 않는다. 재검수에서 걸러진다.)
+            if ov.get("cuts"):
+                cuts = validate_cuts(ov["cuts"],
+                                     duration=float(_common.probe(video).get("duration", 0.0)))
+            events, n_ov = apply_dub_overrides(events, ov)
             log.info("반려 수정 병합: 더빙 대사 %d건 교체(overrides.json)", n_ov)
         except Exception as e:  # noqa: BLE001 — 병합 실패가 더빙을 죽이지 않게(원문대로 진행)
+            cuts = []
             log.warning("overrides.json 병합 실패(무시하고 원문 진행): %s", e)
+    # 구간 잘라내기(E9): use:false·문구·타이밍 병합 **뒤**, pairs·합성·SRT 기록 **전** —
+    # 사용자 타이밍(end_fixed)도 당김 대상이다(절대값이 아니라 그 장면에 붙어 있다).
+    # 완전히 컷 안인 줄은 use=false 와 동일 의미로 표시돼 아래 한 곳에서 함께 빠지고,
+    # 걸친 줄은 경계로 클램프된다. segs(뮤트 창·self-ref 좌표)와 영상도 같은 축으로 —
+    # 이 아래의 video 는 전부 컷본이다(합성 슬롯·스템 분리·믹스·번인이 새 시간축).
+    if cuts:
+        events, n_cut = apply_cuts_to_events(events, cuts)
+        segs = [{**s, "start": shift_time(s["start"], cuts),
+                 "end": shift_time(s["end"], cuts)} for s in segs]
+        video = str(_common.cut_video(video, base / "video_cut.mp4", cuts))
+        log.info("구간 잘라내기(E9): 컷 %d개(총 %.1fs 삭제) — 완전 포함 %d줄 제외, 이후 시각 당김",
+                 len(cuts), cut_total(cuts), n_cut)
     # 한글 대역(관제 검수 카드용, 8/14): 더빙 대사 KO⇄JA 쌍. idx 는 검수함 '수정 재렌더'
     # 오버라이드의 좌표로도 쓰인다. B 루트는 translations.json 이 있지만 C 루트는 여기가 유일.
     # (8/20 확장) end·end_actual·style 동봉 — retime 후 실측 end 로 갱신된다(아래).
-    write_json(build_dub_pairs(segs, events), base / "ko_ja_pairs.json")
+    # (E9) cuts 적용 **후** 에 만들므로 다음 카드는 당겨진 시각을 본다. 적용된 cuts 는
+    # 별도 키로 동봉 — 검수자가 '왜 짧아졌는지' 안다.
+    pairs = build_dub_pairs(segs, events)
+    if cuts:
+        pairs["cuts"] = cuts
+    write_json(pairs, base / "ko_ja_pairs.json")
     # 지문만이던 세그(요음!→（もぐもぐ）)와 use=false(소프트 삭제, E6-0) 제거 —
     # 이 아래 SRT 가 합성 드라이버라, 여기 한 곳에서 TTS 합성·자막(srt/ass 번인)·
     # retime(durs 정렬)이 함께 빠진다. 시작 시각은 아무도 안 옮기므로 뺀 줄의 창은

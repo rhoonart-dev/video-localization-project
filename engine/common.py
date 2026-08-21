@@ -323,6 +323,41 @@ def mux_dub(video: str | os.PathLike, dub_audio: str | os.PathLike,
     return out
 
 
+def cut_video(video: str | os.PathLike, out: str | os.PathLike,
+              cuts: list[dict[str, float]], crf: int = 18,
+              pix_fmt: str = "yuv420p") -> Path:
+    """cuts 구간을 영상에서 들어낸다(앞뒤가 이어 붙음) — E9 구간 잘라내기.
+
+    비디오+오디오 함께 trim → concat. 프레임 정확도가 필요해 재인코딩 경로(발주 허용).
+    cuts 는 engine.cuts.validate_cuts 를 통과한 값(정렬·비겹침) 전제.
+    """
+    from engine.cuts import keep_segments
+
+    out = Path(out)
+    ensure_dir(out.parent)
+    meta = probe(video)
+    keeps = keep_segments(cuts, float(meta["duration"]))
+    if not keeps:
+        raise ValueError("cuts 적용 결과 남는 구간이 없습니다")
+    has_audio = bool(meta.get("has_audio"))
+    parts: list[str] = []
+    for i, (s, e) in enumerate(keeps):
+        span = f"start={s:.6f}" + (f":end={e:.6f}" if e is not None else "")
+        parts.append(f"[0:v]trim={span},setpts=PTS-STARTPTS[v{i}]")
+        if has_audio:
+            parts.append(f"[0:a]atrim={span},asetpts=PTS-STARTPTS[a{i}]")
+    pads = "".join(f"[v{i}][a{i}]" if has_audio else f"[v{i}]" for i in range(len(keeps)))
+    parts.append(f"{pads}concat=n={len(keeps)}:v=1:a={1 if has_audio else 0}"
+                 + ("[v][a]" if has_audio else "[v]"))
+    cmd = [ffmpeg_bin(), "-y", "-i", str(video), "-filter_complex", ";".join(parts),
+           "-map", "[v]", "-c:v", "libx264", "-crf", str(crf), "-pix_fmt", pix_fmt]
+    if has_audio:
+        cmd += ["-map", "[a]", "-c:a", "aac"]
+    cmd += ["-movflags", "+faststart", str(out)]
+    _run(cmd)
+    return out
+
+
 def burn_subtitles(video: str | os.PathLike, ass_path: str | os.PathLike,
                    out: str | os.PathLike, fonts_dir: Optional[str | os.PathLike] = None,
                    crf: int = 18, pix_fmt: str = "yuv420p") -> Path:
