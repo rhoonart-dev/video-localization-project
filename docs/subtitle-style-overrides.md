@@ -25,6 +25,36 @@ subs / telops 의 dict 값에 선택 키가 추가된다(종전 `"ja"` 문자열
 | `start_sec` / `end_sec` | 표시 구간 | 초, **편집본(영상) 시간축**, ≥0, 둘 다 있으면 end > start | ValueError |
 | `use` (E6-0) | **소프트 삭제** — `false` = 그 줄을 렌더에서 뺀다(번인·사이드카 ass/srt·다음 카드 pairs 전부). 삭제가 같은 항목의 다른 diff 를 이긴다(편집실이 `{use:false}` 만 보낸다) | 불리언. 텔롭은 0038 원계약 그대로 | ValueError(불리언 외) |
 
+### 최상위 `cuts` — 구간 잘라내기 (E9, 2026-08-21)
+
+subs/telops 와 별개로 오버라이드 **최상위**에 선택 키 `cuts` 가 온다(계약 정본:
+오케스트레이터 0038 p_edits 확장):
+
+```json
+{ "cuts": [ { "start_sec": 34.0, "end_sec": 41.5 },
+            { "start_sec": 80.2, "end_sec": 95.0 } ] }
+```
+
+- 좌표는 **완성본(현지화 영상) 시간축** 초 — 편집실 타임라인·ko_ja_pairs 의
+  start/end 와 같은 축. 그 구간을 영상에서 들어낸다(앞뒤가 이어 붙는다).
+- 검증(`engine/cuts.validate_cuts`, 즉시 실패): start_sec≥0 · end_sec>start_sec ·
+  서로 겹침 거절 · 최대 20개 · 총 삭제 길이가 원본의 80% 이상이면 거절(실수 방지).
+- **타임라인 재정렬이 본체**: 컷 뒤쪽의 모든 시각(더빙 events start/end ·
+  ja_dub.srt/ass · ja.ass/srt · ko_ja_pairs · ja_events)이 삭제 길이만큼 당겨진다.
+  컷 창에 걸친 항목 — **완전히 안이면 그 줄 제외(use:false 와 동일 의미), 걸치면
+  경계로 클램프**. 사용자 지정 타이밍(end_fixed)도 당김 대상이다(절대값이 아니라
+  그 장면에 붙어 있다).
+- **적용 순서**: use:false·문구·타이밍(subs) 병합 **뒤**, 합성·SRT/ASS 기록 **전**.
+- 다음 카드(ko_ja_pairs·ja_events)는 당겨진 시각으로 동봉되고, 적용된 cuts 목록이
+  별도 키 `cuts` 로 함께 실린다 — 검수자가 '왜 짧아졌는지' 안다.
+- 영상 컷은 `engine/common.cut_video`(ffmpeg trim→concat, 프레임 정확도를 위해
+  재인코딩 경로). C/BC 는 합성·스템 분리·믹스·번인 전부가 컷본 시간축에서 돈다.
+  BC 의 cuts 는 **더빙 단계(src/dub.py)가 담당** — process_video clean 모드는
+  건드리지 않는다(이중 컷 방지). B/BJ 는 render 가 이벤트를 당기고 재조립이 같은
+  값으로 영상을 자른다(bilingual 은 컷본 위에 번인 — 굽고 자르면 위치가 어긋난다).
+- 구 엔진은 모르는 최상위 키를 조용히 무시한다 — E6-0 과 같은 구도라
+  **오케스트레이터는 전 노드 배포 확인 후 플래그(editor_jp_cuts)로 UI 를 연다**.
+
 - **모르는 style 키는 즉시 거절**(조용한 무시 = 사람이 고친 값 증발 — v3 과 동일 원칙).
 - 명시한 키만 얹는다 — `{"style": {"color": "#FF0000"}}` 이면 크기·위치는 기존 그대로.
 - **tts 항목의 style·start_sec/end_sec·use 는 이번 판 범위 밖 — 즉시 거절한다(후속)**.
